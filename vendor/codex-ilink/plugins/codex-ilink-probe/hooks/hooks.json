@@ -1,0 +1,58 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ilink __hook lifecycle",
+            "commandWindows": "ilink __hook lifecycle",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ilink __hook turn UserPromptSubmit",
+            "commandWindows": "ilink __hook turn UserPromptSubmit",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ilink __hook lifecycle",
+            "commandWindows": "ilink __hook lifecycle",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ilink __hook turn Stop",
+            "commandWindows": "ilink __hook turn Stop",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ilink __hook lifecycle",
+            "commandWindows": "ilink __hook lifecycle",
+            "timeout": 1810
+          }
+        ]
+      }
+    ]
+  }
+}
