@@ -1,0 +1,203 @@
+diff --git a/src/cli/ilink.ts b/src/cli/ilink.ts
+index e3c505e..02670bc 100644
+--- a/src/cli/ilink.ts
++++ b/src/cli/ilink.ts
+@@ -544,6 +544,8 @@ export function runCodexCommand(
+   const result = spawnSync(executable, [...args], {
+     cwd: workingDirectory,
+     encoding: "utf8",
++    maxBuffer: 16 * 1024 * 1024,
++    timeout: 30_000,
+     shell: false,
+     windowsHide: true,
+   });
+diff --git a/src/codex/codex-runtime.ts b/src/codex/codex-runtime.ts
+index 1320bde..b978e64 100644
+--- a/src/codex/codex-runtime.ts
++++ b/src/codex/codex-runtime.ts
+@@ -1,3 +1,4 @@
++import { realpathSync } from "node:fs";
+ import {
+   AppServerConnection,
+   type AppServerConnectionOptions,
+@@ -144,6 +145,7 @@ export class CodexRuntime {
+   #detachConnectionEvents: (() => void) | undefined;
+   readonly #eventListeners = new Set<AppServerEventListener>();
+   readonly #loadedThreadIds = new Set<string>();
++  readonly #canonicalCwds = new Map<string, string>();
+   readonly #controlRouters = new Map<string, ControlRouter>();
+   readonly #controlRouterTombstoneTtlMs: number;
+   readonly #controlRouterTimeoutMs: number;
+@@ -273,6 +275,7 @@ export class CodexRuntime {
+       threadId,
+     })) as ThreadResumeResult;
+     this.#loadedThreadIds.add(threadId);
++    this.#rememberCanonicalCwd(threadId, result.cwd);
+     return result;
+   }
+ 
+@@ -321,6 +324,7 @@ export class CodexRuntime {
+       ...permissions,
+     })) as ThreadStartResult;
+     this.#loadedThreadIds.add(result.thread.id);
++    this.#rememberCanonicalCwd(result.thread.id, result.cwd ?? cwd);
+     return result;
+   }
+ 
+@@ -372,6 +376,9 @@ export class CodexRuntime {
+     }
+     if (turnInput.length === 0) throw new Error("E_CODEX_TURN_INPUT_EMPTY");
+     return (await this.#requestOnceWithUnknownOutcome("turn/start", {
++      ...(this.#canonicalCwds.has(input.threadId)
++        ? { cwd: this.#canonicalCwds.get(input.threadId) }
++        : {}),
+       clientUserMessageId: input.clientUserMessageId,
+       input: turnInput,
+       threadId: input.threadId,
+@@ -388,6 +395,17 @@ export class CodexRuntime {
+     });
+   }
+ 
++  #rememberCanonicalCwd(threadId: string, cwd: unknown): void {
++    this.#canonicalCwds.delete(threadId);
++    if (typeof cwd !== "string") return;
++    try {
++      const canonical = realpathSync.native(cwd);
++      if (canonical !== cwd) this.#canonicalCwds.set(threadId, canonical);
++    } catch {
++      // Let Codex report unavailable workspaces without guessing a replacement.
++    }
++  }
++
+   async compactThread(threadId: string): Promise<JsonObject> {
+     return this.#requestOnceWithUnknownOutcome("thread/compact/start", {
+       threadId,
+diff --git a/src/windows/desktop-permissions.ts b/src/windows/desktop-permissions.ts
+index ecb992e..5689ab2 100644
+--- a/src/windows/desktop-permissions.ts
++++ b/src/windows/desktop-permissions.ts
+@@ -12,7 +12,7 @@ export type DesktopPermissionSelection = {
+   settings: Required<ThreadPermissionSettings>;
+ };
+ 
+-const MAX_DESKTOP_PERMISSION_STATE_BYTES = 1024 * 1024;
++const MAX_DESKTOP_PERMISSION_STATE_BYTES = 16 * 1024 * 1024;
+ 
+ export function readDesktopPermissionSelection(
+   primaryPath: string,
+diff --git a/src/windows/desktop-projects.ts b/src/windows/desktop-projects.ts
+index dfe5e5a..da7691f 100644
+--- a/src/windows/desktop-projects.ts
++++ b/src/windows/desktop-projects.ts
+@@ -7,7 +7,7 @@ export type DesktopProject = {
+   name: string;
+ };
+ 
+-const MAX_DESKTOP_PROJECT_STATE_BYTES = 1024 * 1024;
++const MAX_DESKTOP_PROJECT_STATE_BYTES = 16 * 1024 * 1024;
+ 
+ export function desktopGlobalStatePath(
+   environment: NodeJS.ProcessEnv = process.env,
+diff --git a/tests/cli.test.ts b/tests/cli.test.ts
+index 8d0ece4..31e66b9 100644
+--- a/tests/cli.test.ts
++++ b/tests/cli.test.ts
+@@ -321,6 +321,12 @@ test("Codex plugin commands use an existing runtime data directory as cwd", () =
+   }
+ });
+ 
++test("Codex commands accept plugin output larger than one MiB", () => {
++  const result = runCodexCommand(process.execPath, ["-e", "process.stdout.write('x'.repeat(1200000))"]);
++  assert.equal(result.status, 0, result.stderr);
++  assert.equal(result.stdout.length, 1200000);
++});
++
+ test("setup refreshes an older Guard plugin from the current npm package", async () => {
+   const calls: string[][] = [];
+   await configureCodexPlugin({
+diff --git a/tests/codex-runtime.test.ts b/tests/codex-runtime.test.ts
+index 90d0566..c8dbb6c 100644
+--- a/tests/codex-runtime.test.ts
++++ b/tests/codex-runtime.test.ts
+@@ -1,5 +1,5 @@
+ import assert from "node:assert/strict";
+-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
++import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { resolve } from "node:path";
+ import { join } from "node:path";
+@@ -821,6 +821,25 @@ test("thread metadata operations use the stable public methods", async () => {
+ });
+ 
+ 
++test("turns use the same canonical directory as attachment validation", async () => {
++  const directory = mkdtempSync(join(tmpdir(), "codex-ilink-canonical-"));
++  mkdirSync(join(directory, "child"));
++  const alias = `${directory}/child/..`;
++  const runtime = await CodexRuntime.create({
++    bridgeInstanceId: "canonical-test",
++    command: [process.execPath, fakeRuntime, "--resume-cwd", alias],
++  });
++  try {
++    await runtime.resumeThread("thread-existing");
++    const turn = await runtime.startTurn({threadId:"thread-existing",clientUserMessageId:"canonical-test",text:"test"});
++    assert.equal((turn.fixtureParams as Record<string,unknown>).cwd, realpathSync.native(alias));
++    assert.equal((turn.fixtureParams as Record<string,unknown>).permissions, undefined);
++  } finally {
++    runtime.close();
++    rmSync(directory,{recursive:true,force:true});
++  }
++});
++
+ test("existing threads inherit settings and new threads override only cwd", async () => {
+   const runtime = await CodexRuntime.create({
+     bridgeInstanceId: "bridge-instance-thread-start",
+diff --git a/tests/desktop-permissions.test.ts b/tests/desktop-permissions.test.ts
+index 0bdd616..603acd8 100644
+--- a/tests/desktop-permissions.test.ts
++++ b/tests/desktop-permissions.test.ts
+@@ -169,11 +169,20 @@ test("a semantic error in primary state never falls back to stale full access",
+   }
+ });
+ 
++test("Desktop state with more than one MiB of unrelated data remains readable", () => {
++  const directory = mkdtempSync(join(tmpdir(), "codex-ilink-large-state-"));
++  const primaryPath = join(directory, ".codex-global-state.json");
++  try {
++    writeFileSync(primaryPath, JSON.stringify({padding:"x".repeat(1200000)}));
++    assert.equal(readDesktopPermissionSelection(primaryPath).kind, "ask-for-approval");
++  } finally { rmSync(directory, {force:true,recursive:true}); }
++});
++
+ test("an oversized primary state never falls back to stale full access", () => {
+   const directory = mkdtempSync(join(tmpdir(), "codex-ilink-desktop-permissions-"));
+   const primaryPath = join(directory, ".codex-global-state.json");
+   try {
+-    writeFileSync(primaryPath, Buffer.alloc(1024 * 1024 + 1));
++    writeFileSync(primaryPath, Buffer.alloc(16 * 1024 * 1024 + 1));
+     writeFileSync(
+       `${primaryPath}.bak`,
+       JSON.stringify({
+diff --git a/tests/fixtures/fake-codex-runtime.mjs b/tests/fixtures/fake-codex-runtime.mjs
+index a15ca66..71f13d8 100644
+--- a/tests/fixtures/fake-codex-runtime.mjs
++++ b/tests/fixtures/fake-codex-runtime.mjs
+@@ -281,7 +281,9 @@ lines.on("line", (line) => {
+       },
+       approvalPolicy,
+       approvalsReviewer,
+-      cwd: "D:\\Fixture",
++      cwd: process.argv.includes("--resume-cwd")
++        ? process.argv[process.argv.indexOf("--resume-cwd") + 1]
++        : "D:\\Fixture",
+       model: activeModels.get(message.params.threadId) ?? "gpt-fixture",
+       reasoningEffort:
+         activeReasoningEfforts.get(message.params.threadId) ?? "medium",
+@@ -374,6 +376,7 @@ lines.on("line", (line) => {
+     if (
+       !hasExactKeys(message.params, [
+         "clientUserMessageId",
++        ...(process.argv.includes("--resume-cwd") ? ["cwd"] : []),
+         "input",
+         "threadId",
+       ])

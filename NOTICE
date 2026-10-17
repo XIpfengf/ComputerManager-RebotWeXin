@@ -1,0 +1,11 @@
+ComputerManager-RebotWeXin includes Codex_iLink in vendor/codex-ilink.
+
+Upstream: https://github.com/Obito-404/Codex_iLink
+Baseline commit: 081526ee91d6eaa469cc13405e73b9a73f652810
+Upstream package version: 0.1.0-rc.5
+Copyright (c) 2026 Obito
+License: MIT; the original license is preserved at vendor/codex-ilink/LICENSE.
+
+Local modifications are documented in docs/upstream-baseline.md.
+This project is independently maintained and is not an official product of
+the upstream author, Tencent, WeChat or OpenAI.

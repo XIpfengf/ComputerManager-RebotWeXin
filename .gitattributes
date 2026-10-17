@@ -1,0 +1,5 @@
+# Preserve upstream bytes and valid unified-diff context lines.
+docs/codex-ilink-compatibility.patch whitespace=-blank-at-eol
+vendor/codex-ilink/SPEC.md whitespace=-blank-at-eol
+vendor/codex-ilink/src/bridge/migrations/006-durable-turn-input.sql whitespace=-blank-at-eof
+vendor/codex-ilink/src/bridge/migrations/008-pending-desktop-notifications.sql whitespace=-blank-at-eof

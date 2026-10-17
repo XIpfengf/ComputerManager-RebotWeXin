@@ -1,0 +1,238 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Codex iLink 系统架构",
+    "subtitle": "微信进入 Windows 本机 Codex；历史与权限仍由 Codex 管理",
+    "output": "codex-ilink-architecture.html",
+    "viewBox": [1340, 720]
+  },
+  "components": [
+    {
+      "id": "controller",
+      "type": "external",
+      "label": "微信控制者",
+      "sublabel": "唯一绑定用户",
+      "pos": [20, 170],
+      "size": [130, 68]
+    },
+    {
+      "id": "ilink",
+      "type": "cloud",
+      "label": "腾讯 iLink",
+      "sublabel": "长轮询 · 媒体协议",
+      "pos": [185, 170],
+      "size": [140, 68]
+    },
+    {
+      "id": "bridge",
+      "type": "backend",
+      "label": "Bridge Daemon",
+      "sublabel": "路由 · 调度 · 可靠送达",
+      "pos": [390, 170],
+      "size": [160, 72],
+      "tag": "单实例 · 并发 3"
+    },
+    {
+      "id": "app_server",
+      "type": "backend",
+      "label": "Codex App Server",
+      "sublabel": "常驻本机子进程",
+      "pos": [620, 170],
+      "size": [160, 72]
+    },
+    {
+      "id": "threads",
+      "type": "database",
+      "label": "Codex 持久化任务",
+      "sublabel": "历史与任务配置事实源",
+      "pos": [850, 170],
+      "size": [170, 72]
+    },
+    {
+      "id": "desktop",
+      "type": "frontend",
+      "label": "Codex Desktop",
+      "sublabel": "继续同一 thread_id",
+      "pos": [1100, 170],
+      "size": [160, 72]
+    },
+    {
+      "id": "sqlite",
+      "type": "database",
+      "label": "SQLite 状态库",
+      "sublabel": "路由 · 队列 · 租约 · Outbox",
+      "pos": [390, 360],
+      "size": [160, 72],
+      "tag": "WAL + 崩溃恢复"
+    },
+    {
+      "id": "media",
+      "type": "database",
+      "label": "媒体目录",
+      "sublabel": "入站文件 · 出站快照",
+      "pos": [620, 360],
+      "size": [160, 72],
+      "tag": "显式 send_file"
+    },
+    {
+      "id": "desktop_state",
+      "type": "database",
+      "label": "Desktop 全局状态",
+      "sublabel": "项目顺序 · 新任务权限选择",
+      "pos": [850, 360],
+      "size": [170, 72],
+      "tag": "Bridge 只读"
+    },
+    {
+      "id": "guard",
+      "type": "security",
+      "label": "Codex iLink Guard",
+      "sublabel": "Hooks · Named Pipe · Spool",
+      "pos": [1100, 360],
+      "size": [160, 72],
+      "tag": "在线审批回调"
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Windows 当前用户会话 · DPAPI · 用户 ACL · 无 TCP 监听",
+      "wraps": [
+        "bridge",
+        "app_server",
+        "threads",
+        "desktop",
+        "sqlite",
+        "media",
+        "desktop_state",
+        "guard"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "from": "controller",
+      "to": "ilink",
+      "label": "消息 / 附件",
+      "variant": "emphasis",
+      "labelAt": [168, 160]
+    },
+    {
+      "from": "ilink",
+      "to": "bridge",
+      "label": "长轮询 / 回包",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left",
+      "route": "orthogonal-h",
+      "labelAt": [357, 160]
+    },
+    {
+      "from": "bridge",
+      "to": "app_server",
+      "label": "JSON-RPC",
+      "variant": "emphasis"
+    },
+    {
+      "from": "app_server",
+      "to": "threads",
+      "label": "恢复 / 写入",
+      "variant": "emphasis"
+    },
+    {
+      "from": "threads",
+      "to": "desktop",
+      "label": "同一历史",
+      "variant": "emphasis"
+    },
+    {
+      "from": "bridge",
+      "to": "sqlite",
+      "label": "原子提交",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "orthogonal-v",
+      "labelDx": 54
+    },
+    {
+      "from": "bridge",
+      "to": "media",
+      "label": "下载 / 快照",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "orthogonal-v",
+      "labelAt": [595, 300]
+    },
+    {
+      "from": "bridge",
+      "to": "desktop_state",
+      "label": "只读项目与权限选择",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "orthogonal-v",
+      "labelAt": [802, 300]
+    },
+    {
+      "from": "desktop",
+      "to": "guard",
+      "label": "Prompt / Stop / Permission",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "orthogonal-v",
+      "labelDx": -88
+    },
+    {
+      "from": "guard",
+      "to": "bridge",
+      "label": "生命周期元数据 / 审批请求",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "via": [[1180, 500], [470, 500]],
+      "labelAt": [820, 486]
+    },
+    {
+      "from": "guard",
+      "to": "sqlite",
+      "label": "同 thread 原子租约",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "right",
+      "via": [[1180, 535], [580, 535], [580, 396]],
+      "labelAt": [870, 521]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "共享事实源",
+      "items": [
+        "Desktop 与微信继续同一个 thread_id",
+        "Bridge 不复制 Transcript 或任务权限",
+        "新任务只读取 Desktop 当前权限选择"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "安全边界",
+      "items": [
+        "只接受唯一绑定控制者的单聊",
+        "审批决定只存在于在线回调",
+        "出站文件必须由 send_file 显式登记"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "恢复与并发",
+      "items": [
+        "同一任务 FIFO 串行，不同任务最多并行三个",
+        "Dispatch Intent 隔离结果未知窗口",
+        "最终正文与附件通过持久 Outbox 送达"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,74 @@
+{
+  "name": "codex-ilink",
+  "version": "0.1.0-rc.5",
+  "description": "Use WeChat as a secure remote entry point to local Codex sessions on Windows.",
+  "author": "Obito <tipturengufersan@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Obito-404/Codex_iLink.git"
+  },
+  "homepage": "https://github.com/Obito-404/Codex_iLink#readme",
+  "bugs": {
+    "url": "https://github.com/Obito-404/Codex_iLink/issues"
+  },
+  "type": "module",
+  "bin": {
+    "ilink": "./dist/cli/launcher.js"
+  },
+  "files": [
+    ".agents/plugins/marketplace.json",
+    "dist/",
+    "docs/adr/",
+    "docs/assets/*.png",
+    "docs/diagrams/",
+    "docs/feasibility.md",
+    "docs/npm-publishing.md",
+    "docs/release-acceptance.md",
+    "docs/user-guide.md",
+    "plugins/",
+    "SECURITY.md",
+    "SPEC.md"
+  ],
+  "keywords": [
+    "codex",
+    "wechat",
+    "windows",
+    "bridge",
+    "cli"
+  ],
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "ilink": "node --disable-warning=ExperimentalWarning --experimental-strip-types src/cli/main.ts",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-build-assets.mjs",
+    "build:sea": "npm run build --silent && node scripts/build-sea.mjs",
+    "test": "npm run build --silent && node --disable-warning=ExperimentalWarning --experimental-strip-types --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "release:policy": "node scripts/release-policy.mjs",
+    "release:metadata": "node scripts/check-release.mjs",
+    "release:check": "npm run release:metadata --silent && npm run typecheck --silent && npm test --silent && npm pack --dry-run --ignore-scripts",
+    "prepublishOnly": "npm run release:metadata --silent && npm run typecheck --silent && npm test --silent",
+    "prepack": "npm run build --silent",
+    "probe:lease": "node --experimental-strip-types src/probes/lease-arbitration.ts",
+    "probe:resume": "node --experimental-strip-types src/probes/resume-thread.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "esbuild": "^0.28.1",
+    "postject": "1.0.0-alpha.6",
+    "typescript": "^5.9.0"
+  }
+}
