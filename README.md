@@ -6,6 +6,8 @@
 
 **第一版目标：与上游功能对齐，先打通并稳定完整链路。** 暂不扩展产品功能，保留已验证的本机兼容修复。
 
+第一版基线之后，当前工作版本增加同一本机服务的多微信接入：每个微信分别扫码，各自维护会话和回复上下文。自动化检查已通过，用户已确认双微信实际使用功能通过，见 [多微信实现与验收](docs/multi-wechat-implementation.md)。
+
 | 基线项 | 内容 |
 | --- | --- |
 | 上游 | Obito-404/Codex_iLink |
@@ -13,6 +15,7 @@
 | 上游包版本 | `0.1.0-rc.5` |
 | 许可 | MIT，原作者 Copyright (c) 2026 Obito，见 [NOTICE](NOTICE) 和 [原许可证](vendor/codex-ilink/LICENSE) |
 | 本机兼容差异 | 命令输出容量、Desktop 状态容量、Windows 路径别名及对应回归测试 |
+| 本项目扩展 | 多账号宿主、按账号隔离状态、线程归属及统一 Guard 协调 |
 
 来源、8 个差异文件、实机证据和后续计划见 [上游基线说明](docs/upstream-baseline.md)。本项目独立维护，不代表上游作者、腾讯或 OpenAI 的官方产品。
 
@@ -69,6 +72,22 @@ Pop-Location
 `clear` 会创建空白上下文并归档原任务，日常续聊不要使用它。微信 `stop` 中断当前微信回合；PowerShell 的 `scripts/ilink.ps1 stop` 则停止整个 Bridge。
 
 本机 Codex 默认值为 GPT 6.1 Sol、low（轻度）。已有任务沿用自身保存的模型、强度和权限，不会自动改成新的全局默认值；在微信用 `model`、`effort` 查看。新任务权限跟随创建时 Desktop 的选择，已有任务权限在 Desktop 修改，微信 `perm` 不提升权限。
+
+### 两个微信控制同一台电脑
+
+在仓库根目录执行：
+
+```powershell
+.\scripts\ilink.ps1 accounts list
+.\scripts\ilink.ps1 accounts add secondary
+.\scripts\ilink.ps1 status
+```
+
+`primary` 是原微信，`secondary` 是第二个微信的本机别名。用第二个微信扫描新增二维码；多账号 Bridge 会自动加载新绑定，不需要重新扫码第一个微信，也不需要重启 Windows。原版单账号 Bridge 需先更新并在空闲时重启一次。
+
+两边拥有不同主会话、任务导航、列表编号、审批、消息游标及附件上下文；Codex 侧栏中新主会话带账号别名。原有历史和未分配的 Desktop 任务归主账号，第二账号只列出自己创建的任务，不自动接管主账号历史。所有账号仍使用同一 Windows 用户和 Codex 登录，共享这台电脑的文件与软件，独立会话不等于文件系统隔离；同时修改同一文件仍可能冲突。
+
+追加账号使用 `accounts add`，不要用主账号的 `login --force` 代替。当前提供账号列表和追加绑定；第二账号的原地重新登录、移除和跨账号共享历史尚未提供管理命令。详细使用与用户验收步骤见 [多微信实现说明](docs/multi-wechat-implementation.md)。
 
 ### 搜索和发送跨盘文件
 

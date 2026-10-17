@@ -59,7 +59,8 @@ export const CLI_HELP = `用法: ilink <command>
 
   config  查看或修改超时配置
   setup   完成插件安装、微信绑定并启动 Bridge
-  login   扫码绑定唯一微信用户；失效时用 login --force
+  login   绑定主微信；追加微信用 accounts add，主微信失效用 login --force
+  accounts list / add <别名> 查看账号或追加另一个微信
   start   在后台启动微信 Bridge
   startup 管理登录后自动启动
   status  查看 Bridge 状态
@@ -256,6 +257,7 @@ export async function runCli(
     command !== "config" &&
     command !== "login" &&
     command !== "startup" &&
+    command !== "accounts" &&
     command !== "__hook" &&
     argv.length !== 1
   ) {
@@ -263,6 +265,10 @@ export async function runCli(
     return 2;
   }
   try {
+    if (command === "accounts") {
+      const { accountsCommand } = await import("../accounts/account-command.ts");
+      return await accountsCommand(argv.slice(1), io);
+    }
     if (command === "config") return await commands.config(argv.slice(1));
     if (command === "login") return await commands.login(argv.slice(1));
     if (command === "setup") return await commands.setup();
@@ -824,6 +830,9 @@ async function statusCommand(io: CliIo): Promise<number> {
   io.log(
     `Bridge ${phaseLabel(status.phase)}，PID ${status.pid}，启动于 ${new Date(status.startedAtMs).toLocaleString()}`,
   );
+  for (const [name, account] of Object.entries(status.accounts ?? {})) {
+    io.log(`微信 ${name}：${account.phase}${account.pausedUntilMs ? `，重试时间 ${new Date(account.pausedUntilMs).toLocaleString()}` : ""}`);
+  }
   if (isILinkAuthenticationExpired(status)) {
     io.error(
       "微信登录已失效。请执行：ilink stop → ilink login --force → ilink start",

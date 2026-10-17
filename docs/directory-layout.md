@@ -32,7 +32,7 @@ ComputerManager-RebotWeXin/
     └── LICENSE、README.md、package.json、pnpm-lock.yaml 等
 ```
 
-vendor 是固定版本源码导入，不是 Git 子模块，也不含嵌套 `.git`。本项目入口和本机兼容包装器在根目录维护，vendor 的 8 个兼容差异见基线文档。
+vendor 是固定版本源码导入，不是 Git 子模块，也不含嵌套 `.git`。本项目入口和本机兼容包装器在根目录维护；原有 8 个兼容差异见基线文档，后续多微信扩展见多微信实现说明。
 
 ## 仅保留本机，不推送
 
@@ -51,6 +51,7 @@ vendor 是固定版本源码导入，不是 Git 子模块，也不含嵌套 `.gi
 - 商店版 Codex 实际目录：`%LOCALAPPDATA%\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local\Codex_iLink`。本机启动脚本通过已绑定 `state.sqlite` 文件的真实路径定位，不只解析父目录。
 - Codex 用户设置、会话历史和插件由用户的 Codex 数据目录维护，不随本仓库推送。
 - 全局 `ilink` 命令通过 npm link 指向本仓库的构建输出。
+- 多微信扩展在同一个状态数据库中保存账号登记、线程归属与账号范围状态；新增账号的 Inbox/媒体位于私有 `accounts/<别名>/` 子目录。
 - Windows 计划任务 `Codex iLink Bridge` 调用本仓库包装器，以当前用户普通权限运行；没有安装系统级 Service。
 
 凭据、扫码内容、状态数据库和用户聊天内容不作为源码发布。恢复或迁移电脑时需要单独处理绑定与 Codex 登录，克隆仓库不等于恢复私人运行状态。

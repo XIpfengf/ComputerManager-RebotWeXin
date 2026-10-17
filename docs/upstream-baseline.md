@@ -34,7 +34,7 @@
 | `tests/codex-runtime.test.ts` | 恢复会话后规范 cwd 传递回归测试 |
 | `tests/fixtures/fake-codex-runtime.mjs` | 支持上述回归测试的测试进程参数 |
 
-除上述 8 个文件外，导入文件应与固定上游一致。根目录 README、NOTICE、启动脚本和项目文档属于本项目维护内容，上游原始 README 保留在 vendor 内。
+上述 8 个文件是第一版兼容补丁基线。当前工作版本另有本项目多微信扩展，涉及账号模块、SQLite 状态命名空间、宿主、CLI 和 Guard 脚本，不再声称 vendor 仅有这 8 处差异。实现与验证见 [多微信说明](multi-wechat-implementation.md)。根目录 README、NOTICE、启动脚本和项目文档属于本项目维护内容，上游原始 README 保留在 vendor 内。
 
 ## 已有实机证据
 

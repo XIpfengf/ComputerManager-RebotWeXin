@@ -1,7 +1,5 @@
-import { randomUUID } from "node:crypto";
 import {
   existsSync,
-  mkdirSync,
   readdirSync,
   statSync,
 } from "node:fs";
@@ -13,27 +11,9 @@ import {
 } from "node:net";
 import { join, resolve } from "node:path";
 
-import { SqliteState } from "../bridge/sqlite-state.ts";
-import { CodexRuntime } from "../codex/codex-runtime.ts";
 import type { AppServerCommand } from "../codex/protocol.ts";
-import { SqliteTurnLeaseStore } from "../coordination/turn-lease.ts";
-import { BridgeDaemon } from "../daemon/bridge-daemon.ts";
-import { HookReceiver } from "../hooks/hook-receiver.ts";
-import { ILinkClient } from "../ilink/ilink-client.ts";
-import { ILinkError, type ILinkSession } from "../ilink/protocol.ts";
-import { InboundMediaStore } from "../media/inbound-media.ts";
-import { unprotectForCurrentUser } from "./dpapi.ts";
-import {
-  desktopGlobalStatePath,
-  readDesktopProjects,
-} from "./desktop-projects.ts";
-import { readDesktopPermissionSelection } from "./desktop-permissions.ts";
-import {
-  createPowerRequestCommand,
-  PowerRequestController,
-} from "./power-request.ts";
-import { getPresence, getPresenceObservation } from "./presence.ts";
-import { runtimePaths, userPipePath } from "./runtime-paths.ts";
+import { ILinkError } from "../ilink/protocol.ts";
+import { userPipePath } from "./runtime-paths.ts";
 
 const CONTROL_REQUEST_LIMIT_BYTES = 4 * 1024;
 const DEFAULT_POLL_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000] as const;
@@ -42,6 +22,7 @@ const DEFAULT_AUTH_EXPIRED_RETRY_MS = 60 * 60 * 1_000;
 export type HostPhase = "running" | "starting" | "stopping";
 
 export type HostStatus = {
+  accounts?: Record<string, { phase: string; pausedUntilMs?: number }>;
   ilinkAuthPausedUntilMs?: number;
   phase: HostPhase;
   pid: number;
@@ -402,190 +383,8 @@ export type RunWindowsHostOptions = {
 export async function runWindowsHost(
   options: RunWindowsHostOptions = {},
 ): Promise<void> {
-  if (process.platform !== "win32") throw new Error("E_HOST_WINDOWS_ONLY");
-  const environment = options.environment ?? process.env;
-  if (!environment.LOCALAPPDATA) throw new Error("E_LOCALAPPDATA_REQUIRED");
-  const paths = runtimePaths(environment);
-  mkdirSync(paths.dataDirectory, { recursive: true });
-  mkdirSync(paths.logDirectory, { recursive: true });
-
-  const startedAtMs = Date.now();
-  let phase: HostPhase = "starting";
-  let ilinkAuthPausedUntilMs: number | undefined;
-  const localAbort = new AbortController();
-  const forwardAbort = (): void => {
-    phase = "stopping";
-    localAbort.abort(options.signal?.reason);
-  };
-  if (options.signal?.aborted) forwardAbort();
-  else options.signal?.addEventListener("abort", forwardAbort, { once: true });
-
-  const control = await HostControlServer.start({
-    onStatus: () => ({
-      ...(ilinkAuthPausedUntilMs !== undefined
-        ? { ilinkAuthPausedUntilMs }
-        : {}),
-      phase,
-      pid: process.pid,
-      startedAtMs,
-    }),
-    onStop: () => {
-      phase = "stopping";
-      localAbort.abort(new Error("E_HOST_STOP_REQUESTED"));
-    },
-    pipePath: hostControlPipePath(environment),
-  });
-
-  let state: SqliteState | undefined;
-  let leases: SqliteTurnLeaseStore | undefined;
-  let power: PowerRequestController | undefined;
-  let hookReceiver: HookReceiver | undefined;
-  let codex: CodexRuntime | undefined;
-  let failed = false;
-  let primaryError: unknown;
-  try {
-    state = new SqliteState(paths.stateDatabasePath);
-    const activeState = state;
-    const storedSession = state.getILinkSession();
-    if (!storedSession) throw new Error("E_ILINK_LOGIN_REQUIRED");
-    const session: ILinkSession = {
-      baseUrl: storedSession.baseUrl,
-      botId: storedSession.botId,
-      botToken: unprotectForCurrentUser(storedSession.protectedToken),
-      controllerUserId: storedSession.controllerUserId,
-    };
-
-    const bridgeInstanceId = randomUUID();
-    leases = new SqliteTurnLeaseStore(paths.stateDatabasePath);
-    codex = await CodexRuntime.create({
-      bridgeInstanceId,
-      command: desktopCodexAppServerCommand(environment),
-      environment,
-    });
-    const ilink = new ILinkClient({
-      onAuthExpired: ({ pausedUntilMs }) => {
-        ilinkAuthPausedUntilMs = pausedUntilMs;
-      },
-    });
-    const media = new InboundMediaStore({
-      rootDirectory: paths.mediaDirectory,
-    });
-    power = new PowerRequestController(createPowerRequestCommand());
-    let daemon: BridgeDaemon | undefined;
-    hookReceiver = new HookReceiver({
-      onEvent: (event, signal) => daemon?.ingestHookEvent(event, signal),
-      pipePath: paths.pipePath,
-      spoolDirectory: paths.spoolDirectory,
-    });
-    const awayIdleMilliseconds = () =>
-      activeState.getBridgeSettings().awayTimeoutMinutes * 60 * 1_000;
-    daemon = new BridgeDaemon({
-      activeTaskCounter: power,
-      bridgeInstanceId,
-      codex,
-      hookReceiver,
-      ilink,
-      inboxDirectory: paths.inboxDirectory,
-      leases,
-      listProjects: () =>
-        readDesktopProjects(desktopGlobalStatePath(environment)),
-      media,
-      newThreadPermissions: () =>
-        readDesktopPermissionSelection(
-          desktopGlobalStatePath(environment),
-        ).settings,
-      newId: randomUUID,
-      now: Date.now,
-      onLifecycleWarning: (operation, error) => {
-        console.error(`[ilink] ${operation} failed:`, safeErrorMessage(error));
-      },
-      presence: () =>
-        getPresence(undefined, awayIdleMilliseconds()),
-      presenceObservation: () =>
-        getPresenceObservation(undefined, awayIdleMilliseconds()),
-      session,
-      state,
-    });
-    try {
-      await runHostLifecycle(
-        { daemon, leases, power, state },
-        {
-          onRetry:
-            options.onRetry ??
-            ((error, delayMs, failureCount) => {
-              if (error instanceof ILinkError && error.kind === "auth-expired") {
-                console.error(
-                  `[ilink] 微信登录已失效；已暂停请求 ${String(Math.round(delayMs / 60_000))} 分钟。请执行 ilink stop、ilink login --force、ilink start。`,
-                );
-                return;
-              }
-              console.error(
-                `[ilink] poll failed (${failureCount}); retry in ${delayMs}ms:`,
-                safeErrorMessage(error),
-              );
-            }),
-          onStarted: () => {
-            phase = "running";
-          },
-          signal: localAbort.signal,
-        },
-      );
-    } finally {
-      // runHostLifecycle owns these resources as soon as it is invoked.
-      state = undefined;
-      leases = undefined;
-      power = undefined;
-    }
-  } catch (error) {
-    failed = true;
-    primaryError = error;
-  } finally {
-    phase = "stopping";
-    options.signal?.removeEventListener("abort", forwardAbort);
-    // These are only populated when composition failed before lifecycle took
-    // ownership. Every close operation is idempotent at this boundary.
-    const cleanupErrors: unknown[] = [];
-    try {
-      await hookReceiver?.close();
-    } catch (error) {
-      cleanupErrors.push(error);
-    }
-    try {
-      codex?.close();
-    } catch (error) {
-      cleanupErrors.push(error);
-    }
-    try {
-      await power?.close();
-    } catch (error) {
-      cleanupErrors.push(error);
-    }
-    try {
-      leases?.close();
-    } catch (error) {
-      cleanupErrors.push(error);
-    }
-    try {
-      state?.close();
-    } catch (error) {
-      cleanupErrors.push(error);
-    }
-    try {
-      await control.close();
-    } catch (error) {
-      cleanupErrors.push(error);
-    }
-    if (failed && cleanupErrors.length > 0) {
-      throw new AggregateError(
-        [primaryError, ...cleanupErrors],
-        "E_HOST_COMPOSITION_AND_SHUTDOWN",
-      );
-    }
-    if (cleanupErrors.length > 0) {
-      throw new AggregateError(cleanupErrors, "E_HOST_COMPOSITION_SHUTDOWN");
-    }
-  }
-  if (failed) throw primaryError;
+  const { runMultiAccountHost } = await import("../accounts/multi-host.ts");
+  return runMultiAccountHost(options);
 }
 
 function isHostControlResponse(value: unknown): value is HostControlResponse {

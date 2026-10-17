@@ -220,6 +220,8 @@ function main() {
 }
 
 function isGuardedThread(database, threadId, nowMs) {
+  const hasAccounts = database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='thread_accounts'").get();
+  if (hasAccounts && database.prepare("SELECT 1 FROM thread_accounts WHERE thread_id=?").get(threadId)) return true;
   try {
     const row = database
       .prepare(`

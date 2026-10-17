@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { scopedDatabase } from "./scoped-database.ts";
 
 import type { ReleaseTurnLeaseInput } from "../coordination/turn-lease.ts";
 import { outboundMediaPathKey } from "../media/outbound-media.ts";
@@ -191,12 +192,13 @@ export type ILinkSession = {
 export class SqliteState {
   readonly #database: DatabaseSync;
 
-  constructor(path: string) {
+  constructor(path: string, accountScope?: string) {
     mkdirSync(dirname(path), { recursive: true });
     this.#database = new DatabaseSync(path);
     this.#database.exec(
       "PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;",
     );
+    if (accountScope) this.#database = scopedDatabase(this.#database, accountScope);
     this.#migrate();
   }
 
