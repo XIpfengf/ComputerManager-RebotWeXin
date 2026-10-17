@@ -87,7 +87,7 @@ export class ChannelProfileService implements ProfilePort {
   status(threadId: string): string {
     const current = this.store.current(this.account); const snapshot = threadId ? this.store.thread(threadId, this.account) : null;
     return [`已保存配置：${current ? `v${current.revision}` : "尚未初始化"}`, `新会话默认：${current ? (() => { const p = JSON.parse(current.payload) as ChannelProfile; return `${p.session.model ?? "继承 Codex"} / ${p.session.reasoningEffort ?? "继承默认强度"}`; })() : "继承 Codex"}`,
-      ...(threadId ? [snapshot ? `当前身份快照：${snapshot.profile.persona.name} v${snapshot.profile.revision}；创建时 ${snapshot.model} / ${snapshot.effort ?? "默认"}` : "当前身份快照：旧会话（未注入第二版身份）"] : [])].join("\n");
+      ...(threadId ? [snapshot ? `当前身份快照：${snapshot.profile.persona.name} v${snapshot.profile.revision}；创建时 ${snapshot.model} / ${snapshot.effort ?? "默认"}` : "当前身份快照：旧会话（未注入通道身份）"] : [])].join("\n");
   }
   async start(cwd: string, permissions: ThreadPermissionSettings, create: CodexRuntime["startThread"], selection?: ThreadIdentitySettings): ReturnType<CodexRuntime["startThread"]> {
     return this.serial(async () => {
