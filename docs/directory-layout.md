@@ -16,6 +16,7 @@ ComputerManager-RebotWeXin/
 │   ├── codex-ilink-compatibility.patch
 │   ├── guard-startup-acceptance.md
 │   ├── v1-acceptance.md       第一版已验收项、证据及剩余项目
+│   ├── v2-user-guide.md      当前第二版部署流程与完整命令
 │   ├── v2-channel-profile-requirements.md   第二版设计和验收标准
 │   ├── v2-channel-profile-implementation.md 第二版使用与验证
 │   ├── session-retention-plan.md 持续会话、历史归档规则及命令
