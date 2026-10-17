@@ -88,6 +88,8 @@ export type DaemonMediaPort = InboundMediaPort & {
 };
 
 export type BridgeDaemonOptions = {
+  history?: BridgeEngineOptions["history"];
+  profile?: BridgeEngineOptions["profile"];
   activeTaskCounter?: ActiveTaskCounterPort;
   bridgeInstanceId: string;
   codex: DaemonCodexPort;
@@ -118,6 +120,8 @@ const INTERRUPTED_CONFIRMATION_READS = 5;
 type TerminalNotificationEvidence = TerminalNotificationJob["evidence"];
 
 export class BridgeDaemon {
+  hasPendingApproval(threadId: string): boolean { return this.#bridge?.hasPendingApproval(threadId)??false; }
+  async notifyHistory(text: string,id: string): Promise<void> {await this.#bridge?.notifyHistory(text,id);}
   readonly #options: BridgeDaemonOptions;
   #bridge: BridgeEngine | undefined;
   readonly #codexEventTasks = new Set<Promise<unknown>>();
@@ -193,6 +197,8 @@ export class BridgeDaemon {
     }
 
     this.#bridge = new BridgeEngine({
+      ...(this.#options.history ? {history:this.#options.history} : {}),
+      ...(this.#options.profile ? { profile: this.#options.profile } : {}),
       bridgeInstanceId: this.#options.bridgeInstanceId,
       codex: this.#options.codex,
       ilink: this.#options.ilink,
@@ -288,6 +294,7 @@ export class BridgeDaemon {
       throw new Error("Bridge daemon is not started");
     }
     const pollNowMs = this.#options.now();
+    await this.#options.history?.tick().catch(()=>console.error("[ilink] history scan failed; will retry on next scheduled scan"));
     this.#maintainTransportState(pollNowMs);
     this.#options.state.pruneExpiredDesktopObservationTombstones(
       pollNowMs,

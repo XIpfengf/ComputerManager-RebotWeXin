@@ -191,6 +191,13 @@ export type ILinkSession = {
 };
 
 export class SqliteState {
+  #persistentSessionBinding = false;
+
+  /** Preserve the last explicitly selected thread, including pre-upgrade expired bindings. */
+  enablePersistentSessionBinding(): void {
+    this.#database.prepare("UPDATE bindings SET expires_at_ms=?, expiry_notified_at_ms=NULL WHERE singleton=1").run(Number.MAX_SAFE_INTEGER);
+    this.#persistentSessionBinding = true;
+  }
   readonly #database: DatabaseSync;
 
   constructor(path: string, accountScope?: string) {
@@ -565,6 +572,7 @@ export class SqliteState {
   }
 
   setBinding(binding: Binding): void {
+    if (this.#persistentSessionBinding) binding = { ...binding, expiresAtMs: Number.MAX_SAFE_INTEGER };
     this.#database
       .prepare(
         `INSERT INTO bindings
@@ -586,6 +594,7 @@ export class SqliteState {
   }
 
   setBindingForNavigation(binding: Binding): void {
+    if (this.#persistentSessionBinding) binding = { ...binding, expiresAtMs: Number.MAX_SAFE_INTEGER };
     this.#transaction(() => {
       this.#database.exec("DELETE FROM notification_routes");
       this.#database
@@ -639,6 +648,7 @@ export class SqliteState {
   }
 
   getExpiredBindingForReminder(nowMs: number): ExpiredBinding | null {
+    if (this.#persistentSessionBinding) return null;
     const row = this.#database
       .prepare(
         `SELECT thread_id, project_path, expires_at_ms, updated_at_ms,
@@ -1855,7 +1865,7 @@ export class SqliteState {
                )`,
           )
           .run(
-            confirmedAtMs +
+            this.#persistentSessionBinding ? Number.MAX_SAFE_INTEGER : confirmedAtMs +
               this.getBridgeSettings().sessionTimeoutMinutes * 60 * 1_000,
             confirmedAtMs,
             confirmedAtMs,

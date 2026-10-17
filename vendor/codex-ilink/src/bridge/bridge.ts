@@ -1,5 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { prepareReplyFiles } from "./reply-files.ts";
+import { ProfileValidationError, type ProfilePort } from "../profiles/channel-profile.ts";
+import type { HistoryPort } from "../history/history-service.ts";
+import type { ThreadIdentitySettings } from "../codex/codex-runtime.ts";
 import { win32 } from "node:path";
 
 import {
@@ -38,6 +41,7 @@ import {
 } from "./sqlite-state.ts";
 import {
   formatWechatFinalReply,
+  splitWechatText,
 } from "./wechat-output.ts";
 import {
   parseOutboundPayload,
@@ -82,6 +86,8 @@ export type ILinkSender = OutboxILinkSender & {
 };
 
 export type BridgeEngineOptions = {
+  history?: HistoryPort;
+  profile?: ProfilePort;
   bridgeInstanceId?: string;
   codex?: CodexTurnStarter;
   ilink: ILinkSender;
@@ -176,6 +182,7 @@ export type CodexTurnStarter = {
   startThread?(
     cwd: string,
     permissions?: ThreadPermissionSettings,
+    identity?: ThreadIdentitySettings,
   ): Promise<Record<string, unknown> & {
     thread: { id: string } & Record<string, unknown>;
   }>;
@@ -236,6 +243,10 @@ const CODEX_SLOW_TURN_TEXT =
   "⏳ 任务还在处理中，完成后会自动发给你；可发送 st 查看，或发送 stop 停止。";
 
 export class BridgeEngine {
+  readonly #history: HistoryPort | undefined;
+  hasPendingApproval(threadId: string): boolean { return this.#approvals?.list().some(a=>a.threadId===threadId)??false; }
+  async notifyHistory(text: string, id: string): Promise<void> { const token=this.#state.getILinkState(this.#session.botId)?.contextToken;if(token)await this.#send(token,text,id); }
+  readonly #profile: ProfilePort | undefined;
   readonly #completingTurns = new Map<string, Promise<boolean>>();
   readonly #approvals: ApprovalCoordinator | undefined;
   readonly #ilink: ILinkSender;
@@ -287,6 +298,9 @@ export class BridgeEngine {
   #typingPumpRunning = false;
 
   constructor(options: BridgeEngineOptions) {
+    this.#history=options.history;
+    this.#profile = options.profile;
+    if (options.profile) options.state.enablePersistentSessionBinding();
     this.#bridgeInstanceId = options.bridgeInstanceId;
     this.#codex = options.codex;
     this.#ilink = options.ilink;
@@ -1042,6 +1056,7 @@ export class BridgeEngine {
     const intent = parseInboundText(message.text);
     if (intent.kind !== "message") {
       const turnInput: DurableTurnInput = {
+        ...(message.configurationBlocked ? { configurationBlocked: true as const } : {}),
         attachments: [],
         text: message.text,
         version: 1,
@@ -1091,6 +1106,7 @@ export class BridgeEngine {
 
     const turnInput: DurableTurnInput = {
       attachments,
+      ...(message.configurationBlocked ? { configurationBlocked: true as const } : {}),
       text: message.text,
       version: 1,
     };
@@ -1112,6 +1128,9 @@ export class BridgeEngine {
   }): Promise<number> {
     await this.#notifyExpiredBinding();
     let intent = parseInboundText(input.turnInput.text);
+    if ((intent.kind === "profileConfig" || intent.kind === "historyControl") && (input.turnInput.configurationBlocked || input.turnInput.attachments.length > 0)) {
+      intent = { kind: "message", text: `以下为语音/附件资料，不能作为永久配置命令：\n${input.turnInput.text}` };
+    }
     if (
       intent.kind === "message" &&
       input.turnInput.attachments.length === 0 &&
@@ -1191,6 +1210,8 @@ export class BridgeEngine {
     contextToken: string,
   ): Promise<ControlReplyResult> {
     if (intent.kind === "help") return { ok: true, reply: COMMAND_HELP };
+    if (intent.kind === "historyControl") return {ok:true,reply:this.#history?await this.#history.command(intent.command):"当前服务未启用历史管理。"};
+    if (intent.kind === "profileConfig") return { ok: true, reply: this.#profile ? await this.#profile.command(intent.command) : "当前服务未启用通道配置。" };
     if (
       intent.kind === "clearSession" ||
       intent.kind === "compactSession" ||
@@ -1575,13 +1596,15 @@ export class BridgeEngine {
     text: string,
   ): Promise<number> {
     try {
-      return (await this.#send(
-        contextToken,
-        text,
-        this.#inboundReplyClientId(messageId),
-      ))
-        ? 1
-        : 0;
+      const parts = splitWechatText(text);
+      const group = `codex-ilink:command-${createHash("sha256").update(this.#inboundReplyClientId(messageId)).digest("hex")}:final`;
+      const items = parts.map((body, index) => ({ body, clientId: parts.length > 1 ? `${group}:part:${index + 1}` : this.#inboundReplyClientId(messageId), contextToken, createdAtMs: this.#now(), targetUserId: this.#session.controllerUserId }));
+      this.#state.enqueueOutboxBatch(items);
+      let sent = 0;
+      for (const item of items) {
+        if (await this.#send(contextToken, item.body, item.clientId)) sent++;
+      }
+      return sent;
     } finally {
       this.#clearInbound(messageId);
     }
@@ -1750,7 +1773,7 @@ export class BridgeEngine {
     return [
       ...(target.archived ? ["Unarchived"] : []),
       this.#formatThreadPreview(preview, target.threadId),
-      `${String(this.#bindingIdleTimeoutMinutes())} 分钟无活动后自动退出。`,
+      this.#profile ? "会话持续保持，不会因无活动自动退出；发送 new 新建，exit 返回主会话。" : `${String(this.#bindingIdleTimeoutMinutes())} 分钟无活动后自动退出。`,
     ].join("\n");
   }
 
@@ -1769,6 +1792,7 @@ export class BridgeEngine {
   }
 
   async #newSessionReply(): Promise<string> {
+    if (this.#profile && this.#threadHasPendingWork(this.#currentThreadId())) throw new ControlCommandRejected("当前会话仍有任务执行或排队，请等待完成或先 stop。");
     return this.#startSessionReply(
       this.#state.getBridgeSettings().selectedProjectPath,
     );
@@ -1785,7 +1809,9 @@ export class BridgeEngine {
     const started = await this.#codex.startThread(
       cwd,
       this.#readNewThreadPermissions(),
+      ...(this.#profile ? [{ workspaceSelection: projectPath, inboxDirectory: this.#inboxDirectory }] : []),
     );
+    if (this.#profile && typeof started.cwd === "string") projectPath = sameWindowsPath(started.cwd, this.#inboxDirectory) ? null : started.cwd;
     const threadId = stringField(started.thread, "id");
     if (!threadId) throw new Error("Codex did not return a thread id");
     const nowMs = this.#now();
@@ -1801,7 +1827,8 @@ export class BridgeEngine {
         : `已新建并进入会话：${threadId}`,
       `项目：${projectDisplayName(projectPath)}`,
       `权限：${approvalsReviewerText(started)}`,
-      `${String(this.#bindingIdleTimeoutMinutes())} 分钟无活动后自动退出。`,
+      ...(this.#profile ? [this.#profile.status(threadId)] : []),
+      this.#profile ? "会话持续保持，不会因无活动自动退出；发送 new 新建，exit 返回主会话。" : `${String(this.#bindingIdleTimeoutMinutes())} 分钟无活动后自动退出。`,
     ].join("\n");
   }
 
@@ -2084,6 +2111,7 @@ export class BridgeEngine {
     const started = await this.#codex.startThread(
       this.#inboxDirectory,
       this.#readNewThreadPermissions(),
+      ...(this.#profile ? [{ workspaceSelection: null, inboxDirectory: this.#inboxDirectory }] : []),
     );
     const threadId = stringField(started.thread, "id");
     if (!threadId) throw new Error("Codex did not return a thread id");
@@ -2094,10 +2122,12 @@ export class BridgeEngine {
     }
     this.#state.replaceMainThreadForNavigation(threadId);
     this.#mainThreadId = threadId;
+    if (this.#profile && typeof started.cwd === "string" && !sameWindowsPath(started.cwd, this.#inboxDirectory)) this.#state.setBindingForNavigation({ threadId, projectPath: started.cwd, updatedAtMs: this.#now(), expiresAtMs: this.#now() + this.#bindingIdleTimeoutMs() });
     const archived = await this.#archiveClearedThread(previousThreadId);
     return [
       "已清除微信主会话上下文，当前仍在微信主会话。",
-      "当前未选择项目。",
+      this.#profile && typeof started.cwd === "string" && !sameWindowsPath(started.cwd, this.#inboxDirectory) ? `项目：${projectDisplayName(started.cwd)}` : "当前未选择项目。",
+      ...(this.#profile ? [this.#profile.status(threadId)] : []),
       ...(archived ? [] : ["原主会话仍保留在任务列表中。"]),
     ].join("\n");
   }
@@ -2347,7 +2377,7 @@ export class BridgeEngine {
       ? (findThreadTitle(threadPages, binding.threadId) ?? "当前会话")
       : null;
     const session = binding
-      ? `${sessionTitle}（剩余 ${String(Math.max(1, Math.ceil((binding.expiresAtMs - nowMs) / 60_000)))} 分钟）`
+      ? this.#profile ? `${sessionTitle}（持续保持）` : `${sessionTitle}（剩余 ${String(Math.max(1, Math.ceil((binding.expiresAtMs - nowMs) / 60_000)))} 分钟）`
       : "微信主会话";
     const hasPendingWork =
       knownActiveTasks.length > 0 ||
@@ -2358,6 +2388,7 @@ export class BridgeEngine {
     return [
       `项目：${projectDisplayName(projectPath)}`,
       `会话：${session}`,
+      ...(this.#profile && permissionThreadId ? [this.#profile.status(permissionThreadId)] : []),
       `模型：${formatModelAndEffort(
         permissionMetadata ? stringField(permissionMetadata, "model") : undefined,
         permissionMetadata
@@ -2472,6 +2503,7 @@ export class BridgeEngine {
     const serializedInput = serializeDurableTurnInput(input.turnInput);
     const currentBinding = this.#state.getBinding(nowMs);
     const route = routeInboundText({
+      persistentSession: this.#profile !== undefined,
       binding: currentBinding
         ? {
             expiresAtMs: currentBinding.expiresAtMs,
@@ -3556,6 +3588,7 @@ function controlFailureReply(
   error: unknown,
   fallback: string,
 ): ControlReplyResult {
+  if (error instanceof ProfileValidationError) return { ok: false, reply: error.message };
   return {
     ok: false,
     reply: error instanceof ControlCommandRejected ? error.reply : fallback,

@@ -1,4 +1,6 @@
 export type AtomicControlIntent =
+  | { kind: "historyControl"; command: string }
+  | { kind: "profileConfig"; command: string }
   | { code: string | null; kind: "approve" }
   | { confirmationCode: string | null; kind: "approveAll" }
   | { code: string | null; kind: "deny" }
@@ -36,6 +38,8 @@ export type InboundIntent =
 export type RoutedControlIntent = AtomicControlIntent | ControlSequenceIntent;
 
 export const COMMAND_HELP = [
+  "history — 历史归档策略与预览（history help 查看，不删除历史）",
+  "config — 本通道身份与新会话默认设置（config help 查看）",
   "p — projects",
   "p<n> — select project",
   "s | s+ | sarc — sessions",
@@ -58,6 +62,8 @@ export const COMMAND_HELP = [
 export function parseInboundText(text: string): InboundIntent {
   const command = text.trim();
   const foldedCommand = command.toLowerCase();
+  if (/^config(?:\s|$)/u.test(command)) return { kind: "profileConfig", command };
+  if (/^history(?:\s|$)/u.test(command)) return { kind: "historyControl", command };
 
   switch (foldedCommand) {
     case "p":

@@ -915,7 +915,8 @@ test("iLink threads never use Markdown as a file-send fallback", async () => {
       String(resumedParams.developerInstructions),
       /新建 iLink 任务/u,
     );
-    assert.deepEqual(startedParams.dynamicTools, [
+    assert.ok((startedParams.dynamicTools as Array<{ name: string }>).some(tool => tool.name === "channel_history"));
+    assert.deepEqual((startedParams.dynamicTools as Array<{ name: string }>).filter(tool => tool.name === "send_file"), [
       {
         description: "将本机文件登记为微信附件，随本轮最终回复发送。",
         inputSchema: {

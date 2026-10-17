@@ -15,7 +15,11 @@ ComputerManager-RebotWeXin/
 │   ├── upstream-baseline.md  固定上游及兼容差异
 │   ├── codex-ilink-compatibility.patch
 │   ├── guard-startup-acceptance.md
-│   └── v1-acceptance.md       已验收项、证据及剩余项目
+│   ├── v1-acceptance.md       第一版已验收项、证据及剩余项目
+│   ├── v2-channel-profile-requirements.md   第二版设计和验收标准
+│   ├── v2-channel-profile-implementation.md 第二版使用与验证
+│   ├── session-retention-plan.md 持续会话、历史归档规则及命令
+│   └── examples/channel-profile.example.json 中性身份模板
 ├── scripts/
 │   ├── ilink.ps1             日常管理入口
 │   ├── register-startup.mjs  商店版状态路径适配及任务注册
@@ -52,6 +56,8 @@ vendor 是固定版本源码导入，不是 Git 子模块，也不含嵌套 `.gi
 - Codex 用户设置、会话历史和插件由用户的 Codex 数据目录维护，不随本仓库推送。
 - 全局 `ilink` 命令通过 npm link 指向本仓库的构建输出。
 - 多微信扩展在同一个状态数据库中保存账号登记、线程归属与账号范围状态；新增账号的 Inbox/媒体位于私有 `accounts/<别名>/` 子目录。
+- 第二版配置位于同一私有根目录的 `profiles/<别名>/profile.json`（以及 `.bak`），修订、恢复意图、线程快照与模型变更审计保存在原状态数据库；不随仓库上传。
+- 历史归档策略、固定标记和操作记录也保存在原状态库；自动归档按微信通道独立控制、默认关闭，不删除 Codex 原始历史或用户文件。
 - Windows 计划任务 `Codex iLink Bridge` 调用本仓库包装器，以当前用户普通权限运行；没有安装系统级 Service。
 
 凭据、扫码内容、状态数据库和用户聊天内容不作为源码发布。恢复或迁移电脑时需要单独处理绑定与 Codex 登录，克隆仓库不等于恢复私人运行状态。

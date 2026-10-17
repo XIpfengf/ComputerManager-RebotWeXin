@@ -39,6 +39,11 @@ export function formatWechatFinalReply(
 ): string[] {
   text = stripDesktopInboxItemDirectives(text);
   text = extractWechatLocalFileReferences(text).text;
+  return splitWechatText(text);
+}
+
+/** Lossless control/config text splitting, without Markdown or file extraction. */
+export function splitWechatText(text: string): string[] {
   if (text.length === 0) return [];
   if (Buffer.byteLength(text, "utf8") <= WECHAT_TEXT_MAX_UTF8_BYTES) {
     return [text];

@@ -27,10 +27,17 @@ export type CodexRuntimeOptions = AppServerConnectionOptions & {
   controlRouterTimeoutMs?: number;
 };
 
+export type ThreadIdentitySettings = { developerInstructions?: string; model?: string; effort?: string; workspaceSelection?: string | null; inboxDirectory?: string };
+
 const ILINK_DEVELOPER_INSTRUCTIONS =
   "你正在通过 iLink 回复微信控制者。需要发送本机文件时必须调用 send_file，path 使用当前 Codex 项目工作区内的 Windows 绝对文件路径；工具成功后不要在最终回复中再次输出本地路径。若工具不可用或失败，必须明确说明未发送，提示用户在微信中新建 iLink 任务后重试，且不得在最终回复中输出本机路径。Markdown 链接、普通自然语言路径和 URL 都不会作为附件。";
 
 const ILINK_DYNAMIC_TOOLS = [
+  {
+    name: "channel_history",
+    description: "检索当前微信通道自己的历史。空参数列出最近会话；指定 threadId 读取本通道会话，query 可筛选内容。不会读取其他微信通道。",
+    inputSchema: { type: "object", additionalProperties: false, properties: { threadId: { type: "string" }, query: { type: "string" }, archived: { type: "boolean" }, cursor: { type: "string" } } },
+  },
   {
     description: "将本机文件登记为微信附件，随本轮最终回复发送。",
     inputSchema: {
@@ -141,6 +148,16 @@ type ExpiredControlRouter = {
 };
 
 export class CodexRuntime {
+  #threadInstructions: ((id: string) => string | undefined) | undefined;
+
+  setThreadInstructionResolver(resolver: (id: string) => string | undefined): void { this.#threadInstructions = resolver; }
+
+  async readDefaultModelSettings(cwd?: string): Promise<{ model: string; effort: string | null }> {
+    const result = await this.#requestSafely("config/read", { includeLayers: false, ...(cwd ? { cwd } : {}) });
+    const config = result.config as Record<string, unknown> | undefined;
+    if (typeof config?.model !== "string") throw new Error("无法解析 Codex 默认模型，请明确设置 config set model");
+    return { model: config.model, effort: typeof config.model_reasoning_effort === "string" ? config.model_reasoning_effort : null };
+  }
   #connection: AppServerConnection;
   #detachConnectionEvents: (() => void) | undefined;
   readonly #eventListeners = new Set<AppServerEventListener>();
@@ -271,7 +288,7 @@ export class CodexRuntime {
 
   async resumeThread(threadId: string): Promise<ThreadResumeResult> {
     const result = (await this.#requestSafely("thread/resume", {
-      developerInstructions: ILINK_DEVELOPER_INSTRUCTIONS,
+      developerInstructions: this.#instructions(this.#threadInstructions?.(threadId)),
       threadId,
     })) as ThreadResumeResult;
     this.#loadedThreadIds.add(threadId);
@@ -316,17 +333,22 @@ export class CodexRuntime {
   async startThread(
     cwd: string,
     permissions: ThreadPermissionSettings = {},
+    identity: ThreadIdentitySettings = {},
   ): Promise<ThreadStartResult> {
     const result = (await this.#requestOnceWithUnknownOutcome("thread/start", {
       cwd,
-      developerInstructions: ILINK_DEVELOPER_INSTRUCTIONS,
+      developerInstructions: this.#instructions(identity.developerInstructions),
       dynamicTools: ILINK_DYNAMIC_TOOLS,
+      ...(identity.model ? { model: identity.model } : {}),
+      ...(identity.effort ? { config: { model_reasoning_effort: identity.effort } } : {}),
       ...permissions,
     })) as ThreadStartResult;
     this.#loadedThreadIds.add(result.thread.id);
     this.#rememberCanonicalCwd(result.thread.id, result.cwd ?? cwd);
     return result;
   }
+
+  #instructions(persona?: string): string { return [ILINK_DEVELOPER_INSTRUCTIONS, persona].filter(Boolean).join("\n\n"); }
 
   async ensureThread(threadId: string): Promise<void> {
     if (

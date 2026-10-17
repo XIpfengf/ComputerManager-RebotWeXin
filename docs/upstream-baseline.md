@@ -36,6 +36,8 @@
 
 上述 8 个文件是第一版兼容补丁基线。当前工作版本另有本项目多微信扩展，涉及账号模块、SQLite 状态命名空间、宿主、CLI 和 Guard 脚本，不再声称 vendor 仅有这 8 处差异。实现与验证见 [多微信说明](multi-wechat-implementation.md)。根目录 README、NOTICE、启动脚本和项目文档属于本项目维护内容，上游原始 README 保留在 vendor 内。
 
+后续本项目扩展还包括完整回复交付，以及第二版通道身份配置、原生身份注入/恢复、模型默认值、历史工具和配置命令，分别见 [回复交付](reply-delivery-implementation.md) 与 [第二版实现](v2-channel-profile-implementation.md)。这些属于固定上游之上的项目改造，未声称来自原作者；上游许可和来源保留。
+
 ## 已有实机证据
 
 迁移前的评估副本使用 Node.js `24.14.0`、Codex CLI `0.162.0-alpha.17.2`：

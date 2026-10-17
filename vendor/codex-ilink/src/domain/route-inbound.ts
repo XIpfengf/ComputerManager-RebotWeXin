@@ -11,6 +11,7 @@ export type NotificationWindow = {
 };
 
 export type RouteInboundTextInput = {
+  persistentSession?: boolean;
   binding: SessionBinding | null;
   bindingIdleTimeoutMs?: number;
   mainThreadId: string;
@@ -37,6 +38,12 @@ const BINDING_IDLE_TIMEOUT_MS = 30 * 60 * 1_000;
 export function routeInboundText(
   input: RouteInboundTextInput,
 ): AmbiguousNotificationRouteDecision | TurnRouteDecision {
+  // Background results never steal focus from an explicitly selected session.
+  if (input.persistentSession) return {
+    binding: input.binding ? { threadId: input.binding.threadId, expiresAtMs: Number.MAX_SAFE_INTEGER } : null,
+    kind: "turn", route: input.binding ? "binding" : "main", text: input.text,
+    threadId: input.binding?.threadId ?? input.mainThreadId,
+  };
   const bindingIdleTimeoutMs =
     input.bindingIdleTimeoutMs ?? BINDING_IDLE_TIMEOUT_MS;
   const activeBinding =

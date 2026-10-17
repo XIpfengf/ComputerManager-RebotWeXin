@@ -15,6 +15,7 @@ export type ParsedControllerMessage =
       contextToken: string;
       hasUnsupportedMedia?: true;
       kind: "text";
+      configurationBlocked?: true;
       mediaCandidates?: readonly InboundMediaCandidate[];
       messageId: string;
       receivedAtMs: number;
@@ -126,6 +127,7 @@ export function parseControllerMessage(
     contextToken: message.context_token,
     ...(hasUnsupportedMedia ? { hasUnsupportedMedia: true } : {}),
     kind: "text",
+    ...(/^(?:config|history)(?:\s|$)/u.test(text) && (message.item_list ?? []).some(item => item.type !== WireMessageItemType.TEXT || item.ref_msg !== undefined) ? { configurationBlocked: true as const } : {}),
     ...(mediaCandidates.length > 0 ? { mediaCandidates } : {}),
     messageId,
     receivedAtMs:

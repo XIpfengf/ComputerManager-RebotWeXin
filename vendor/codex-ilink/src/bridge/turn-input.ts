@@ -7,6 +7,7 @@ export type DurableTurnAttachment = {
 };
 
 export type DurableTurnInput = {
+  configurationBlocked?: true;
   attachments: DurableTurnAttachment[];
   text: string;
   version: 1;
@@ -74,6 +75,7 @@ export function parseDurableInboundFailure(
 }
 
 function assertDurableTurnInput(value: unknown): asserts value is DurableTurnInput {
+  if (isRecord(value) && value.configurationBlocked !== undefined && value.configurationBlocked !== true) throw invalidTurnInput();
   if (!isRecord(value) || value.version !== 1 || typeof value.text !== "string") {
     throw invalidTurnInput();
   }
