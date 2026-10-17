@@ -7,7 +7,6 @@ import type { ILinkSender } from "./bridge.ts";
 import { ILinkError, type ILinkSession } from "../ilink/protocol.ts";
 import { parseDesktopNotificationClientId } from "./desktop-notification-identity.ts";
 import { dispatchOutboxItem } from "./outbox-delivery.ts";
-import { WECHAT_FINAL_MAX_MESSAGES } from "./wechat-output.ts";
 
 export type OutboxDrainResult = {
   confirmed: number;
@@ -39,6 +38,7 @@ export type OutboxWorkerOptions = {
 /** Replays durable pending sends with one stable iLink client_id. */
 export class OutboxWorker {
   readonly #failedForRun = new Set<string>();
+  readonly #finalRetryAt = new Map<string, number>();
   readonly #ilink: ILinkSender;
   readonly #maxAttempts: number;
   readonly #now: () => number;
@@ -78,6 +78,7 @@ export class OutboxWorker {
   resetDeferred(): number {
     const count = this.#failedForRun.size;
     this.#failedForRun.clear();
+    this.#finalRetryAt.clear();
     return count;
   }
 
@@ -87,6 +88,11 @@ export class OutboxWorker {
     for (const item of this.#state.listPendingOutbox()) {
       if (signal?.aborted) throw signal.reason;
       const finalReply = finalReplyGroup(item.clientId);
+      const retryAt = this.#finalRetryAt.get(item.clientId);
+      if (retryAt !== undefined && this.#now() >= retryAt) {
+        this.#finalRetryAt.delete(item.clientId);
+        this.#failedForRun.delete(item.clientId);
+      }
       const contextToken =
         item.contextToken ||
         this.#state.getILinkState(this.#session.botId)?.contextToken;
@@ -141,6 +147,9 @@ export class OutboxWorker {
       }
       if (!confirmed) {
         this.#failedForRun.add(item.clientId);
+        // A failed long-answer part must not wait forever for another user
+        // message. Keep its ID/body and retry on a later poll after cooldown.
+        if (finalReply !== null) this.#finalRetryAt.set(item.clientId, this.#now() + 30_000);
         if (finalReply !== null) blockedFinalReplies.add(finalReply);
         result.failed += 1;
       }
@@ -158,8 +167,7 @@ function finalReplyGroup(clientId: string): string | null {
     baseClientId &&
     (partNumber === null ||
       (Number.isSafeInteger(partNumber) &&
-        partNumber >= 1 &&
-        partNumber <= WECHAT_FINAL_MAX_MESSAGES))
+        partNumber >= 1))
   ) {
     return baseClientId;
   }

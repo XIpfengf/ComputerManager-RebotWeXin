@@ -1,5 +1,3 @@
-import { WECHAT_FINAL_MAX_MESSAGES } from "./wechat-output.ts";
-
 export type DesktopNotificationIdentity = {
   baseClientId: string;
   origin: TerminalNotificationOrigin;
@@ -44,8 +42,7 @@ export function desktopNotificationMessageClientIds(
   if (messageCount === 1) return [baseClientId];
   if (
     !Number.isSafeInteger(messageCount) ||
-    messageCount < 1 ||
-    messageCount > WECHAT_FINAL_MAX_MESSAGES
+    messageCount < 1
   ) {
     throw new Error("E_DESKTOP_NOTIFICATION_PARTS");
   }
@@ -60,10 +57,7 @@ export function desktopNotificationCandidateClientIds(
 ): string[] {
   return [
     baseClientId,
-    ...Array.from(
-      { length: WECHAT_FINAL_MAX_MESSAGES },
-      (_, index) => `${baseClientId}:part:${String(index + 1)}`,
-    ),
+    `${baseClientId}:part:1`,
   ];
 }
 
@@ -86,7 +80,7 @@ export function parseDesktopNotificationClientId(
   const part = match[6] ? Number(match[6]) : null;
   if (
     part !== null &&
-    (!Number.isSafeInteger(part) || part > WECHAT_FINAL_MAX_MESSAGES)
+    (!Number.isSafeInteger(part) || part < 1)
   ) {
     return null;
   }
@@ -106,7 +100,7 @@ export function isFinalDesktopNotificationPart(
 ): boolean {
   const identity = parseDesktopNotificationClientId(clientId);
   if (!identity) return false;
-  if (identity.part === null || identity.part >= WECHAT_FINAL_MAX_MESSAGES) {
+  if (identity.part === null) {
     return true;
   }
   return !exists(

@@ -1,8 +1,4 @@
-export const WECHAT_FINAL_MAX_MESSAGES = 3;
 export const WECHAT_TEXT_MAX_UTF8_BYTES = 2_000;
-
-const TRUNCATION_NOTICE =
-  "\n\n⚠️ 回复过长，内容已截断；请在 Codex Desktop 查看完整结果。";
 const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, {
   granularity: "grapheme",
 });
@@ -18,10 +14,18 @@ export function extractWechatLocalFileReferences(text: string): {
 } {
   const references: WechatLocalFileReference[] = [];
   const remaining: string[] = [];
+  let fence: ReturnType<typeof markdownFence> = null;
   for (const line of text.split(/\r?\n/gu)) {
+    const marker = markdownFence(line);
+    if (fence || marker) {
+      remaining.push(line);
+      if (fence && marker?.marker === fence.marker && marker.length >= fence.length && marker.rest.trim() === "") fence = null;
+      else if (!fence && marker) fence = marker;
+      continue;
+    }
     const reference = standaloneLocalFileReference(line);
     if (reference) references.push(reference);
-    else remaining.push(line);
+    else remaining.push(replaceInlineLocalLinks(line, references));
   }
   return {
     references,
@@ -29,36 +33,35 @@ export function extractWechatLocalFileReferences(text: string): {
   };
 }
 
-/** Formats one Codex final answer for the bounded WeChat text channel. */
+/** Bounded individual messages, unbounded number of parts. No body is discarded. */
 export function formatWechatFinalReply(
   text: string,
-  options: { maxMessages?: number } = {},
 ): string[] {
   text = stripDesktopInboxItemDirectives(text);
   text = extractWechatLocalFileReferences(text).text;
   if (text.length === 0) return [];
-  const maxMessages = options.maxMessages ?? WECHAT_FINAL_MAX_MESSAGES;
-  if (!Number.isSafeInteger(maxMessages) || maxMessages < 1) return [];
   if (Buffer.byteLength(text, "utf8") <= WECHAT_TEXT_MAX_UTF8_BYTES) {
     return [text];
   }
 
   const messages: string[] = [];
   let remaining = text;
-  while (remaining.length > 0 && messages.length < maxMessages) {
+  while (remaining.length > 0) {
     const split = takeUtf8Prefix(remaining, WECHAT_TEXT_MAX_UTF8_BYTES);
-    messages.push(split.prefix);
-    remaining = split.suffix;
+    if (!split.suffix) { messages.push(split.prefix); break; }
+    // Prefer complete paragraphs, then lines/sentences. Keep the exact original
+    // separators so concatenating text parts recovers the complete body.
+    let end = split.prefix.lastIndexOf("\n\n");
+    if (end >= 0) end += 2;
+    if (end < split.prefix.length / 3) {
+      const boundaries = [...split.prefix.matchAll(/[\n。！？!?；;]/gu)];
+      const last = boundaries.at(-1);
+      end = last ? last.index + last[0].length : 0;
+    }
+    if (end < split.prefix.length / 3) end = split.prefix.length;
+    messages.push(remaining.slice(0, end));
+    remaining = remaining.slice(end);
   }
-  if (remaining.length === 0) return messages;
-
-  const noticeBytes = Buffer.byteLength(TRUNCATION_NOTICE, "utf8");
-  const last = messages.at(-1) ?? "";
-  const shortened = takeUtf8Prefix(
-    last,
-    WECHAT_TEXT_MAX_UTF8_BYTES - noticeBytes,
-  ).prefix;
-  messages[messages.length - 1] = `${shortened}${TRUNCATION_NOTICE}`;
   return messages;
 }
 
@@ -148,4 +151,46 @@ function standaloneLocalFileReference(
     label: match[1]?.trim() || "附件",
     path: match[2].trim(),
   };
+}
+
+function isLocalFileTarget(path: string): boolean {
+  return /^[A-Za-z]:[\\/]/u.test(path) || /^file:\/\//iu.test(path) ||
+    (!/^[a-z][a-z0-9+.-]*:/iu.test(path) && !/^(?:#|\/\/)/u.test(path) && /[.\\/]/u.test(path));
+}
+
+/** Handles balanced parentheses and angle destinations; code spans stay data. */
+function replaceInlineLocalLinks(line: string, references: WechatLocalFileReference[]): string {
+  let result = "", offset = 0, codeRun = 0;
+  while (offset < line.length) {
+    if (line[offset] === "`") {
+      let end = offset;
+      while (line[end] === "`") end++;
+      const length = end - offset;
+      codeRun = codeRun === length ? 0 : (codeRun || length);
+      result += line.slice(offset, end); offset = end; continue;
+    }
+    const start = line[offset] === "!" && line[offset + 1] === "[" ? offset + 1 : offset;
+    if (!codeRun && line[start] === "[") {
+      const labelEnd = line.indexOf("](", start + 1);
+      if (labelEnd >= 0) {
+        let end = labelEnd + 2, depth = 1, angle = false;
+        for (; end < line.length; end++) {
+          const ch = line[end];
+          if (ch === "<") angle = true;
+          else if (ch === ">") angle = false;
+          else if (!angle && ch === "(") depth++;
+          else if (!angle && ch === ")" && --depth === 0) break;
+        }
+        const raw = line.slice(labelEnd + 2, end).trim();
+        const path = raw.startsWith("<") && raw.endsWith(">") ? raw.slice(1, -1) : raw;
+        if (end < line.length && isLocalFileTarget(path)) {
+          const label = line.slice(start + 1, labelEnd).trim() || "附件";
+          references.push({ label, path });
+          result += label; offset = end + 1; continue;
+        }
+      }
+    }
+    result += line[offset++];
+  }
+  return result;
 }

@@ -8,31 +8,12 @@ import {
   parseDesktopNotificationClientId,
   terminalNotificationClientId,
 } from "../src/bridge/desktop-notification-identity.ts";
-import { WECHAT_FINAL_MAX_MESSAGES } from "../src/bridge/wechat-output.ts";
-
-test("Desktop notification parts stay aligned with the WeChat message cap", () => {
-  const baseClientId = desktopNotificationClientId("thread-a", "turn-a");
-  const maxPartClientId =
-    `${baseClientId}:part:${String(WECHAT_FINAL_MAX_MESSAGES)}`;
-  const overflowClientId =
-    `${baseClientId}:part:${String(WECHAT_FINAL_MAX_MESSAGES + 1)}`;
-
-  assert.equal(
-    desktopNotificationCandidateClientIds(baseClientId).length,
-    WECHAT_FINAL_MAX_MESSAGES + 1,
-  );
-  assert.equal(
-    desktopNotificationMessageClientIds(
-      baseClientId,
-      WECHAT_FINAL_MAX_MESSAGES,
-    ).length,
-    WECHAT_FINAL_MAX_MESSAGES,
-  );
-  assert.equal(
-    parseDesktopNotificationClientId(maxPartClientId)?.part,
-    WECHAT_FINAL_MAX_MESSAGES,
-  );
-  assert.equal(parseDesktopNotificationClientId(overflowClientId), null);
+test("Desktop notification identities support arbitrary positive part numbers", () => {
+  const base = desktopNotificationClientId("thread-a", "turn-a");
+  assert.equal(desktopNotificationMessageClientIds(base, 25).length, 25);
+  assert.equal(parseDesktopNotificationClientId(`${base}:part:25`)?.part, 25);
+  assert.equal(parseDesktopNotificationClientId(`${base}:part:0`), null);
+  assert.equal(parseDesktopNotificationClientId(`${base}:part:9007199254740992`), null);
 });
 
 test("interrupted Desktop notifications are grouped but cannot open a reply route", () => {

@@ -1,17 +1,16 @@
 import { win32 } from "node:path";
+import { prepareReplyFiles } from "../bridge/reply-files.ts";
 
 import {
   SqliteState,
   type NotificationRoute,
 } from "../bridge/sqlite-state.ts";
 import {
-  desktopNotificationCandidateClientIds,
   desktopNotificationMessageClientIds,
   terminalNotificationClientId,
   type TerminalNotificationOrigin,
 } from "../bridge/desktop-notification-identity.ts";
 import {
-  extractWechatLocalFileReferences,
   formatWechatFinalReply,
 } from "../bridge/wechat-output.ts";
 import type { HookEvent } from "../hooks/hook-receiver.ts";
@@ -21,6 +20,7 @@ import type { PresenceState } from "../windows/presence.ts";
 export type DesktopTerminalStatus = "completed" | "failed" | "interrupted";
 
 export type DesktopNotifierOptions = {
+  outboundDirectory?: string;
   now: () => number;
   presence?: () => Promise<PresenceState>;
   readThread: (input: {
@@ -68,8 +68,10 @@ export class DesktopNotifier {
   readonly #readThread: DesktopNotifierOptions["readThread"];
   readonly #session: ILinkSession;
   readonly #state: SqliteState;
+  readonly #outboundDirectory: string | undefined;
 
   constructor(options: DesktopNotifierOptions) {
+    this.#outboundDirectory = options.outboundDirectory;
     this.#now = options.now;
     this.#presence = options.presence;
     this.#readThread = options.readThread;
@@ -155,15 +157,13 @@ export class DesktopNotifier {
     const text =
       context.messageOverride ??
       formatDesktopNotification(event, status, origin, thread);
-    const extracted = extractWechatLocalFileReferences(text);
-    const safeText = [
-      extracted.text,
-      ...(extracted.references.length > 0
-        ? ["⚠️ 最终回答包含本机附件，请在 Codex Desktop 查看。"]
-        : []),
-    ].join("\n\n");
+    const prepared = prepareReplyFiles({
+      text,
+      ...(typeof thread.cwd === "string" ? { workspaceRoot: thread.cwd } : {}),
+      ...(this.#outboundDirectory ? { exportRoot: this.#outboundDirectory } : {}),
+    });
     const nowMs = this.#now();
-    const messages = formatWechatFinalReply(safeText);
+    const messages = [...prepared.bodies, ...formatWechatFinalReply(prepared.text)];
     const contextToken =
       this.#state.getILinkState(this.#session.botId)?.contextToken ?? "";
     const clientIds = desktopNotificationMessageClientIds(
@@ -185,9 +185,7 @@ export class DesktopNotifier {
 }
 
 function hasDesktopNotification(state: SqliteState, baseClientId: string): boolean {
-  return desktopNotificationCandidateClientIds(baseClientId).some((clientId) =>
-    Boolean(state.getOutbox(clientId)),
-  );
+  return state.listOutboxGroup(baseClientId).length > 0;
 }
 
 export function markDesktopNotificationDelivered(

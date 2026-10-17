@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { scopedDatabase } from "./scoped-database.ts";
+import { compareOutboxParts } from "./outbox-order.ts";
 
 import type { ReleaseTurnLeaseInput } from "../coordination/turn-lease.ts";
 import { outboundMediaPathKey } from "../media/outbound-media.ts";
@@ -258,12 +259,9 @@ export class SqliteState {
              )
              AND NOT EXISTS (
                SELECT 1 FROM outbox
-               WHERE outbox.client_id IN (
-                 'codex-ilink:' || dispatch_intents.turn_id || ':final',
-                 'codex-ilink:' || dispatch_intents.turn_id || ':final:part:1',
-                 'codex-ilink:' || dispatch_intents.turn_id || ':final:part:2',
-                 'codex-ilink:' || dispatch_intents.turn_id || ':final:part:3'
-               )
+               WHERE outbox.client_id = 'codex-ilink:' || dispatch_intents.turn_id || ':final'
+                 OR substr(outbox.client_id, 1, length('codex-ilink:' || dispatch_intents.turn_id || ':final:part:')) =
+                   'codex-ilink:' || dispatch_intents.turn_id || ':final:part:'
              )`,
         )
         .run(cutoffMs);
@@ -1708,8 +1706,8 @@ export class SqliteState {
     outbox: readonly PendingOutboxInput[];
     turnId: string;
   }): { dispatch: DispatchIntent; outbox: OutboxItem[] } {
-    if (input.outbox.length === 0 || input.outbox.length > 3) {
-      throw new Error("final reply requires one to three outbox items");
+    if (input.outbox.length === 0) {
+      throw new Error("final reply requires at least one outbox item");
     }
     return this.#transaction(() => {
       const current = this.#requireDispatchIntent(input.operationId);
@@ -1810,7 +1808,17 @@ export class SqliteState {
          ORDER BY created_at_ms, client_id`,
       )
       .all() as OutboxRow[];
-    return rows.map(outboxItemFromRow);
+    return rows.map(outboxItemFromRow).sort(compareOutboxParts);
+  }
+
+  listOutboxGroup(baseClientId: string): OutboxItem[] {
+    const prefix = `${baseClientId}:part:`;
+    const rows = this.#database.prepare(
+      `SELECT client_id, target_user_id, context_token, body, body_sha256,
+              status, created_at_ms, confirmed_at_ms FROM outbox
+       WHERE client_id = ? OR substr(client_id,1,?) = ?`,
+    ).all(baseClientId, prefix.length, prefix) as OutboxRow[];
+    return rows.map(outboxItemFromRow).sort(compareOutboxParts);
   }
 
   confirmOutbox(
@@ -2597,7 +2605,7 @@ function outboxItemFromRow(row: OutboxRow): OutboxItem {
 }
 
 function bridgeFinalTurnId(clientId: string): string | null {
-  const match = /^codex-ilink:([^:]+):final(?:$|:part:[1-3]$)/u.exec(clientId);
+  const match = /^codex-ilink:([^:]+):final(?:$|:part:[1-9][0-9]*$)/u.exec(clientId);
   return match?.[1] ?? null;
 }
 

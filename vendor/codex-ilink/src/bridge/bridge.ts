@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { prepareReplyFiles } from "./reply-files.ts";
 import { win32 } from "node:path";
 
 import {
@@ -36,14 +37,12 @@ import {
   type PendingOutboxInput,
 } from "./sqlite-state.ts";
 import {
-  extractWechatLocalFileReferences,
   formatWechatFinalReply,
 } from "./wechat-output.ts";
 import {
   parseOutboundPayload,
   outboundMediaDirectory,
   removeOutboundMediaSnapshot,
-  serializeOutboundPayload,
   stageOutboundMedia,
   stagedOutboundMedia,
 } from "../media/outbound-media.ts";
@@ -234,11 +233,10 @@ const MISSING_THREAD_TEXT =
 const CODEX_THREAD_RESUME_FAILED_TEXT =
   "❌ Codex 无法恢复目标任务，本条消息未执行。请在 Codex Desktop 确认任务可打开后重发。";
 const CODEX_SLOW_TURN_TEXT =
-  "⏳ Codex 任务仍在执行，已长时间没有结束；可能正在等待工具、审批或网络。任务未被取消，可用 st 查看或用 stop 停止。";
-const LEGACY_ATTACHMENT_REJECTED_TEXT =
-  "⚠️ 旧版附件记录未通过当前安全校验，未发送本机文件；请在新的 iLink 任务中重新发送。";
+  "⏳ 任务还在处理中，完成后会自动发给你；可发送 st 查看，或发送 stop 停止。";
 
 export class BridgeEngine {
+  readonly #completingTurns = new Map<string, Promise<boolean>>();
   readonly #approvals: ApprovalCoordinator | undefined;
   readonly #ilink: ILinkSender;
   readonly #inboxDirectory: string | undefined;
@@ -445,7 +443,20 @@ export class BridgeEngine {
     return { accepted: accepted.acceptedMessageIds.length, sent };
   }
 
-  async ingestCodexEvent(event: CodexEvent): Promise<boolean> {
+  ingestCodexEvent(event: CodexEvent): Promise<boolean> {
+    const turn = objectField(event.params, "turn");
+    const turnId = stringField(turn, "id") ?? stringField(event.params, "turnId");
+    const threadId = stringField(event.params, "threadId");
+    if (event.method !== "turn/completed" || !turnId || !threadId) return this.#ingestCodexEvent(event);
+    const key = JSON.stringify([threadId, turnId]);
+    const current = this.#completingTurns.get(key);
+    if (current) return current;
+    const task = this.#ingestCodexEvent(event).finally(() => this.#completingTurns.delete(key));
+    this.#completingTurns.set(key, task);
+    return task;
+  }
+
+  async #ingestCodexEvent(event: CodexEvent): Promise<boolean> {
     if (event.method === "error") {
       const threadId = stringField(event.params, "threadId");
       const turnId = stringField(event.params, "turnId");
@@ -616,6 +627,7 @@ export class BridgeEngine {
             failureText === null && effectiveCompletionStatus === "completed"
               ? attachmentIntents
               : [],
+            typeof readThread?.cwd === "string" ? readThread.cwd : undefined,
           )
         : null;
     if (dispatch.completedAtMs === null) {
@@ -1483,66 +1495,14 @@ export class BridgeEngine {
     text: string,
     turnId: string,
     registeredAttachments: readonly OutboundAttachmentIntent[],
+    workspaceRoot?: string,
   ): PendingOutboxInput[] {
-    const extracted = extractWechatLocalFileReferences(text);
-    const mediaBodies: string[] = [];
-    const mediaFailures: string[] = [];
-    if (extracted.references.length > 0) {
-      mediaFailures.push(
-        registeredAttachments.length > 0
-          ? "⚠️ 已忽略回复中的本地路径；附件仅按 send_file 的登记结果发送。"
-          : "⚠️ 本地文件未发送；请在微信中新建 iLink 任务后使用 send_file。",
-      );
-    }
-    if (
-      registeredAttachments.some(
-        ({ snapshotProvenance }) => snapshotProvenance !== "staged-v1",
-      )
-    ) {
-      mediaFailures.push(LEGACY_ATTACHMENT_REJECTED_TEXT);
-    }
-    const uniqueReferences: Array<{ label: string; path: string }> = [];
-    const seenPaths = new Set<string>();
-    for (const reference of [
-      ...registeredAttachments
-        .filter(({ snapshotProvenance }) => snapshotProvenance === "staged-v1")
-        .map((attachment) => ({
-          label: attachment.name,
-          path: attachment.path,
-          pathKey: attachment.pathKey,
-        })),
-    ]) {
-      if (seenPaths.has(reference.pathKey)) continue;
-      seenPaths.add(reference.pathKey);
-      uniqueReferences.push({ label: reference.label, path: reference.path });
-    }
-    for (const reference of uniqueReferences.slice(0, 2)) {
-      try {
-        mediaBodies.push(
-          serializeOutboundPayload(
-            stagedOutboundMedia({
-              exportRoot: this.#outboundDirectory ?? "",
-              label: reference.label,
-              path: reference.path,
-            }),
-          ),
-        );
-      } catch (error) {
-        mediaFailures.push(
-          `⚠️ 附件“${reference.label}”未发送：${outboundMediaFailureText(error)}`,
-        );
-      }
-    }
-    if (uniqueReferences.length > 2) {
-      mediaFailures.push("⚠️ 单次回复最多发送 2 个附件，其余未发送。");
-    }
-    const finalText = [...mediaFailures, extracted.text]
-      .filter((part) => part.length > 0)
-      .join("\n\n");
-    const messages = formatWechatFinalReply(finalText, {
-      maxMessages: 3 - mediaBodies.length,
+    const prepared = prepareReplyFiles({
+      text, registered: registeredAttachments,
+      ...(workspaceRoot ? { workspaceRoot } : {}),
+      ...(this.#outboundDirectory ? { exportRoot: this.#outboundDirectory } : {}),
     });
-    const bodies = [...mediaBodies, ...messages];
+    const bodies = [...prepared.bodies, ...formatWechatFinalReply(prepared.text)];
     if (bodies.length === 0) bodies.push(CODEX_EMPTY_REPLY_TEXT);
     const baseClientId = `codex-ilink:${turnId}:final`;
     const createdAtMs = this.#now();
@@ -1606,12 +1566,7 @@ export class BridgeEngine {
   }
 
   #finalReplyOutbox(turnId: string): OutboxItem[] {
-    const baseClientId = `codex-ilink:${turnId}:final`;
-    const single = this.#state.getOutbox(baseClientId);
-    if (single) return [single];
-    return Array.from({ length: 3 }, (_, index) =>
-      this.#state.getOutbox(`${baseClientId}:part:${String(index + 1)}`),
-    ).filter((item): item is OutboxItem => item !== null);
+    return this.#state.listOutboxGroup(`codex-ilink:${turnId}:final`);
   }
 
   async #replyToCommand(

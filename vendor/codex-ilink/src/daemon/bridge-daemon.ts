@@ -212,6 +212,7 @@ export class BridgeDaemon {
       state: this.#options.state,
     });
     this.#terminalNotifier = new DesktopNotifier({
+      outboundDirectory,
       now: this.#options.now,
       ...(this.#options.presence ? { presence: this.#options.presence } : {}),
       readThread: (input) => this.#options.codex.readThread(input),

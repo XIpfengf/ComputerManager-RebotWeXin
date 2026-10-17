@@ -405,7 +405,7 @@ test("a Desktop completion hides local file paths and points attachments back to
     assert.equal(await notifier.notifyTerminal(stopEvent, "completed"), "queued");
     const body = state.listPendingOutbox()[0]?.body ?? "";
     assert.doesNotMatch(body, /D:\\Project|report\.md/u);
-    assert.match(body, /最终回答包含本机附件，请在 Codex Desktop 查看/u);
+    assert.match(body, /附件[\s\S]*无法核验当前任务目录/u);
   });
 });
 

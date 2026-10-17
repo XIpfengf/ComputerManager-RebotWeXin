@@ -2082,7 +2082,7 @@ test("a long-running turn sends one durable progress notice without releasing it
     assert.deepEqual(sent.map(({ clientId, text }) => ({ clientId, text })), [
       {
         clientId: "codex-ilink:turn-slow:slow",
-          text: "⏳ Codex 任务仍在执行，已长时间没有结束；可能正在等待工具、审批或网络。任务未被取消，可用 st 查看或用 stop 停止。",
+          text: "⏳ 任务还在处理中，完成后会自动发给你；可发送 st 查看，或发送 stop 停止。",
       },
     ]);
     assert.equal(leases.getLease("thread-slow")?.turnId, "turn-slow");
@@ -3081,7 +3081,7 @@ test("active unknown turns retain their exact leases and consume the global thre
   }
 });
 
-test("an oversized final reply is durably capped at three safe WeChat messages", async () => {
+test("an oversized final reply is fully persisted and delivered without a part cap", async () => {
   const directory = mkdtempSync(join(tmpdir(), "codex-ilink-final-output-"));
   const databasePath = join(directory, "state.sqlite");
   const state = new SqliteState(databasePath);
@@ -3153,17 +3153,11 @@ test("an oversized final reply is durably capped at three safe WeChat messages",
       true,
     );
 
-    assert.deepEqual(
-      sent.map(({ clientId }) => clientId),
-      [
-        "codex-ilink:turn-long:final:part:1",
-        "codex-ilink:turn-long:final:part:2",
-        "codex-ilink:turn-long:final:part:3",
-      ],
-    );
-    assert.deepEqual(pendingCounts, [3, 2, 1]);
+    assert.equal(sent.length, 5);
+    assert.deepEqual(sent.map(({ clientId }) => clientId), Array.from({ length: 5 }, (_, i) => `codex-ilink:turn-long:final:part:${i + 1}`));
+    assert.deepEqual(pendingCounts, [5, 4, 3, 2, 1]);
     assert.ok(sent.every(({ text }) => Buffer.byteLength(text, "utf8") <= 2_000));
-    assert.match(sent[2]?.text ?? "", /内容已截断.*Codex Desktop/u);
+    assert.equal(sent.map(({ text }) => text).join(""), finalText);
     assert.ok(sent.every(({ text }) => !text.includes("\uFFFD")));
   } finally {
     bridge.close();
@@ -3271,7 +3265,7 @@ test("a standalone Codex local file link is never uploaded implicitly", async ()
     assert.equal(order.length, 1);
     assert.match(
       order[0] ?? "",
-      /^text:⚠️ 本地文件未发送[\s\S]*新建 iLink 任务[\s\S]*已发给你。/u,
+      /^text:⚠️ 附件[\s\S]*无法核验当前任务目录[\s\S]*已发给你。/u,
     );
     assert.equal(state.listPendingOutbox().length, 0);
   } finally {
@@ -3546,7 +3540,7 @@ test("send_file registers and delivers one attachment for the accepted Bridge tu
     ]);
     assert.match(
       delivered[2] ?? "",
-      /^text:⚠️ 已忽略回复中的本地路径[\s\S]*已发给你。/u,
+      /^text:已发给你。/u,
     );
     assert.equal(existsSync(registered!.path), false);
     assert.equal(existsSync(vanishing.path), false);

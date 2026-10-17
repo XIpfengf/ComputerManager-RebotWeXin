@@ -1450,6 +1450,7 @@ test("a user-source plain heartbeat completion bypasses presence and replays onl
       "codex-ilink:automation:thread-heartbeat:turn-heartbeat:final",
     );
     assert.equal(sent[0]?.text, "⏰ 定时测试已触发。");
+    await waitFor(() => state.listLiveNotificationRoutes(30_001).length === 1);
     assert.deepEqual(state.listTerminalNotificationJobs(30_000), []);
     assert.deepEqual(state.listLiveNotificationRoutes(30_001), [
       {
