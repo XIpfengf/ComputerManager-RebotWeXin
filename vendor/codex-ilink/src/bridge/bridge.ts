@@ -206,7 +206,8 @@ export type CodexEvent = {
 };
 
 type CodexTurnFailure = {
-  category: "network" | "other";
+  category: "network" | "connection" | "other";
+  connectionReason?: "protocol" | "transport";
   httpStatusCode: number | undefined;
 };
 
@@ -3415,6 +3416,10 @@ function formatCodexTurnFailure(
   const failure = completionError
     ? sanitizeCodexTurnFailure(completionError)
     : remembered;
+  if (failure?.category === "connection") {
+    const cause = failure.connectionReason === "protocol" ? "Codex 返回的数据格式异常，中间件连接已断开" : "中间件与 Codex 的连接已断开，底层原因尚未确认";
+    return `❌ 本轮微信请求中断：${cause}。未取得最终结果；这不代表你查询的目标任务已停止。未自动重试执行任务。`;
+  }
   if (failure?.category === "network") {
     if (failure.httpStatusCode === 403) {
       return "❌ Codex 网络请求失败：上游服务拒绝访问（HTTP 403）。请稍后重试。";
@@ -3424,10 +3429,10 @@ function formatCodexTurnFailure(
       : `❌ Codex 网络请求失败（HTTP ${String(failure.httpStatusCode)}）。请稍后重试。`;
   }
   if (status === "interrupted") {
-    return "❌ Codex 任务已中断，未生成最终结果。请重试；详情请在 Codex Desktop 查看。";
+    return "❌ 本轮微信请求已中断，未取得最终结果。Codex 未提供明确中断原因，不能据此判断其他会话的任务是否停止。未自动重试执行任务；可继续询问状态，或在 Codex Desktop 查看本轮记录。";
   }
   if (status === "failed" || failure) {
-    return "❌ Codex 执行失败。请稍后重试；详情请在 Codex Desktop 查看。";
+    return "❌ 本轮微信请求执行失败，Codex 未提供可确认的具体原因。未自动重试执行任务；请核对本轮执行记录与实际结果后再决定是否继续。";
   }
   return null;
 }
@@ -3436,6 +3441,10 @@ function sanitizeCodexTurnFailure(
   error: Record<string, unknown>,
 ): CodexTurnFailure {
   const info = objectField(error, "codexErrorInfo");
+  const connectionReason = info?.bridgeConnectionFailure;
+  if (connectionReason === "protocol" || connectionReason === "transport") {
+    return {category:"connection",connectionReason,httpStatusCode:undefined};
+  }
   const httpStatusCode = codexHttpStatusCode(error);
   const networkVariants = new Set([
     "httpConnectionFailed",

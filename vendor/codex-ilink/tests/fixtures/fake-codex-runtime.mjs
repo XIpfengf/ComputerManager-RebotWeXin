@@ -200,6 +200,11 @@ lines.on("line", (line) => {
     return;
   }
 
+  if (message.method === "thread/turns/list") {
+    respond(message.id, {data:[],nextCursor:null});
+    return;
+  }
+
   if (message.method === "thread/archive") {
     if (!hasExactKeys(message.params, ["threadId"])) {
       rejectUnexpectedParams(message);
@@ -253,7 +258,7 @@ lines.on("line", (line) => {
 
   if (message.method === "thread/resume") {
     if (
-      !hasExactKeys(message.params, ["developerInstructions", "threadId"])
+      !hasExactKeys(message.params, ["developerInstructions", "excludeTurns", "threadId"]) || message.params.excludeTurns !== true
     ) {
       rejectUnexpectedParams(message);
       return;

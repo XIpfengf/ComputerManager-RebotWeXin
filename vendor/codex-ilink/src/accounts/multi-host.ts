@@ -21,7 +21,7 @@ import { ChannelProfileService } from "../profiles/channel-profile.ts";
 import { HistoryService } from "../history/history-service.ts";
 import { isDesktopThreadPinned } from "../windows/desktop-pins.ts";
 
-/** One Windows host, one Codex, one Hook listener. Account transports fail independently. */
+/** One host and execution runtime; background reads have a separate fault domain. */
 export async function runMultiAccountHost(options: RunWindowsHostOptions): Promise<void> {
   if (process.platform !== "win32") throw new Error("E_HOST_WINDOWS_ONLY");
   const environment = options.environment ?? process.env;
@@ -43,6 +43,7 @@ export async function runMultiAccountHost(options: RunWindowsHostOptions): Promi
   });
   let store: AccountStore | undefined;
   let codex: CodexRuntime | undefined;
+  let observer: CodexRuntime | undefined;
   let receiver: HookReceiver | undefined;
   const power = new PowerRequestController(createPowerRequestCommand());
   const counts = new Map<string, number>();
@@ -52,8 +53,12 @@ export async function runMultiAccountHost(options: RunWindowsHostOptions): Promi
     store.importPrimary();
     const accounts = store;
     const bridgeInstanceId = randomUUID();
-    codex = await CodexRuntime.create({ bridgeInstanceId, command: desktopCodexAppServerCommand(environment), environment });
+    codex = await CodexRuntime.create({ bridgeInstanceId, command: desktopCodexAppServerCommand(environment), environment,
+      onDiagnostic:event=>console.error(`[ilink:execution] ${JSON.stringify({at:new Date().toISOString(),...event})}`) });
     const runtime = codex;
+    observer = await CodexRuntime.create({ bridgeInstanceId, command: desktopCodexAppServerCommand(environment), environment,
+      onDiagnostic:event=>console.error(`[ilink:observer] ${JSON.stringify({at:new Date().toISOString(),...event})}`) });
+    const observationRuntime = observer;
     const profiles = new ProfileStore(accounts.database, accounts.root);
     runtime.setThreadInstructionResolver(id => profiles.thread(id)?.instructions);
     receiver = new HookReceiver({
@@ -79,12 +84,14 @@ export async function runMultiAccountHost(options: RunWindowsHostOptions): Promi
         const idle = () => state.getBridgeSettings().awayTimeoutMinutes * 60_000;
         const profile = new ChannelProfileService({ store: profiles, account: name, runtime, projects: () => readDesktopProjects(desktopGlobalStatePath(environment)) });
         const scopedCodex=accountCodex(runtime,accounts,name,profile);
-        const history=new HistoryService({accounts,account:name,codex:scopedCodex,state,leases,instanceId:bridgeInstanceId,now:Date.now,approvalBusy:id=>daemon?.hasPendingApproval(id)??true,desktopPinned:id=>isDesktopThreadPinned(id,environment),notify:async(text,id)=>{await daemon?.notifyHistory(text,id);}});
+        const scopedObserver=accountCodex(observationRuntime,accounts,name);
+        const historyCodex=new Proxy(scopedCodex,{get(target,key){return key === "readThread" ? scopedObserver.readThread : Reflect.get(target,key);}});
+        const history=new HistoryService({accounts,account:name,codex:historyCodex,state,leases,instanceId:bridgeInstanceId,now:Date.now,approvalBusy:id=>daemon?.hasPendingApproval(id)??true,desktopPinned:id=>isDesktopThreadPinned(id,environment),notify:async(text,id)=>{await daemon?.notifyHistory(text,id);}});
         // Invalid hand edits must not interrupt old sessions or account polling.
         try { profiles.initialize(name); } catch { console.error(`[ilink:${name}] profile requires config reload or local repair`); }
         daemon = new BridgeDaemon({
           bridgeInstanceId, state, session, leases,
-          codex: scopedCodex, ilink, profile, history,
+          codex: scopedCodex, terminalReader:scopedObserver, ilink, profile, history,
           // Only the host closes/listens on the shared pipe. Per-account polls
           // can safely ask the receiver to drain its serialized spool.
           hookReceiver: { start: async () => {}, close: async () => {}, drainSpool: () => hooks.drainSpool() },
@@ -153,6 +160,7 @@ export async function runMultiAccountHost(options: RunWindowsHostOptions): Promi
     for (const channel of channels.values()) await attempt(() => channel.daemon.stop());
     await attempt(() => receiver?.close());
     await attempt(() => codex?.close());
+    await attempt(() => observer?.close());
     await attempt(() => powerWork);
     await attempt(() => power.close());
     for (const channel of channels.values()) { await attempt(() => channel.leases.close()); await attempt(() => channel.state.close()); }

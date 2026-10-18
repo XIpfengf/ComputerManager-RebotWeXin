@@ -13,6 +13,20 @@ import {
 const fakeRuntime = resolve("tests/fixtures/fake-codex-runtime.mjs");
 const NON_TIMING_TEST_REQUEST_TIMEOUT_MS = 5_000;
 
+test("background history hydration uses pages and cannot disconnect an unrelated active WeChat turn", async () => {
+  const runtime=await CodexRuntime.create({bridgeInstanceId:"history-protocol-test",command:[process.execPath,resolve("tests/fixtures/fake-broken-history.mjs"),"--two-pages"]});
+  const events: Array<{method:string;params:Record<string,unknown>}>=[];
+  runtime.onEvent(e=>events.push(e));
+  try {
+    await runtime.startTurn({threadId:"current",text:"汇报另一个会话的进度",clientUserMessageId:"message"});
+    const result=await runtime.readThread({threadId:"large",includeTurns:true});
+    assert.equal((result.thread.turns as unknown[]).length,2);
+    assert.equal((result.thread.turns as Array<{items:Array<{text:string}>}>)[1]!.items[0]!.text,'FULL_FINAL_原样保留'.repeat(1000));
+    assert.equal(events.some(e=>e.method==="error"),false);
+    assert.deepEqual((await runtime.listModels()).data,[]);
+  } finally {runtime.close();}
+});
+
 test("control intent classification uses an isolated ephemeral tool turn", async () => {
   const runtime = await CodexRuntime.create({
     bridgeInstanceId: "bridge-instance-control-router",
@@ -811,7 +825,8 @@ test("thread metadata operations use the stable public methods", async () => {
 
     assert.deepEqual(read.thread, {
       id: "thread-existing",
-      includeTurns: true,
+      includeTurns: false,
+      turns: [],
     });
     assert.deepEqual(unarchived.thread, { id: "thread-existing" });
     assert.deepEqual(named, { name: "来自微信的任务" });
@@ -857,7 +872,7 @@ test("existing threads inherit settings and new threads override only cwd", asyn
     assert.deepEqual(resumed.sandbox, { type: "workspaceWrite" });
     assert.deepEqual(
       Object.keys(resumed.fixtureParams as Record<string, unknown>).sort(),
-      ["developerInstructions", "threadId"],
+      ["developerInstructions", "excludeTurns", "threadId"],
     );
     assert.deepEqual(started.thread, {
       cwd: "D:\\Allowed Project",
