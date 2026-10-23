@@ -11,8 +11,26 @@ import { BridgeDaemon } from "../src/daemon/bridge-daemon.ts";
 import { AccountStore } from "../src/accounts/account-store.ts";
 import { accountCodex, AccountLeaseStore } from "../src/accounts/account-scope.ts";
 import type { CodexRuntime } from "../src/codex/codex-runtime.ts";
+import type {DelegationService} from "../src/delegation/delegation-service.ts";
 import type { CodexEvent } from "../src/bridge/bridge.ts";
 import type { ILinkSession, WireWeixinMessage } from "../src/ilink/protocol.ts";
+
+test("delegation uses only the real active input after dispatch body is cleared",async()=>{
+  const f=fixture();const listeners=new Set<(e:CodexEvent)=>void>();const responses:Array<Record<string,unknown>>=[];let sourceText="";
+  const runtime={startTurn:async()=>({turn:{id:"test-turn"}}),onEvent:(fn:(e:CodexEvent)=>void)=>{listeners.add(fn);return()=>listeners.delete(fn);},isServerRequestLive:()=>true,respondToServerRequest:(_id:unknown,result:Record<string,unknown>)=>{responses.push(result);return true;}} as unknown as CodexRuntime;
+  const service={command:async(_ctx:unknown,_args:unknown,source:{text:string})=>{sourceText=source.text;return "queued";}} as unknown as DelegationService;
+  try{
+    f.primary.createDispatchIntent({operationId:"op-delegate",dedupeKey:"test/delegate",threadId:"thread-a",body:"private original",createdAtMs:1,contextToken:"ctx"});
+    f.primary.markDispatchAccepted("op-delegate","test-turn",2);assert.equal(f.primary.getDispatchIntentByTurnId("test-turn")?.body,null);
+    const scoped=accountCodex(runtime,f.accounts,"primary",undefined,{service,state:f.primary});scoped.onEvent(()=>{});
+    await scoped.startTurn({threadId:"thread-a",text:"告诉验收会话执行测试",clientUserMessageId:"msg"});
+    for(const fn of listeners)fn({id:1,method:"item/tool/call",params:{threadId:"thread-a",turnId:"test-turn",namespace:null,tool:"delegate_task",arguments:{action:"submit"}}});
+    await new Promise(r=>setImmediate(r));assert.equal(sourceText,"告诉验收会话执行测试");assert.equal(responses[0]?.success,true);
+    for(const fn of listeners)fn({method:"turn/completed",params:{threadId:"thread-a",turn:{id:"test-turn"}}});
+    for(const fn of listeners)fn({id:2,method:"item/tool/call",params:{threadId:"thread-a",turnId:"test-turn",namespace:null,tool:"delegate_task",arguments:{action:"submit"}}});
+    await new Promise(r=>setImmediate(r));assert.equal(responses[1]?.success,false);
+  }finally{f.close();}
+});
 
 function fixture() {
   const root = join(mkdtempSync(join(tmpdir(), "ilink-accounts-")), "Codex_iLink");

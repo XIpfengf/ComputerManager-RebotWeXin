@@ -50,6 +50,15 @@ const fakeCodexRuntime = fileURLToPath(
   new URL("./fixtures/fake-codex-runtime.mjs", import.meta.url),
 );
 
+test("delegated result delivery preserves every text chunk and deduplicates retries",async()=>{
+ await withBridge(async({bridge,sent})=>{
+   const text=("跨会话结果。\n\n".repeat(1000))+"完整结尾";
+   assert.equal(await bridge.notifyDelegation(text,"delegation:fixture:result","ctx-fixture"),true);
+   assert(sent.length>2);assert.equal(sent.map(x=>x.text).join(""),text);
+   const count=sent.length;await bridge.notifyDelegation(text,"delegation:fixture:result","ctx-fixture");assert.equal(sent.length,count);
+ });
+});
+
 test("help is deduplicated, persisted before send, and confirmed after send", async () => {
   await withBridge(async ({ bridge, sent, state }) => {
     const message = textMessage(1, "help");
@@ -827,7 +836,8 @@ test("media download failures and raw voice return explicit errors without start
   }
 });
 
-test("a definite immediate Codex media rejection is reported and does not block the next FIFO turn", async () => {
+for (const rejection of ["media","runtime-update"]) {
+test(`a definite immediate Codex rejection (${rejection}) is reported and does not block the next FIFO turn`, async () => {
   const directory = mkdtempSync(join(tmpdir(), "codex-ilink-media-rejected-"));
   const databasePath = join(directory, "state.sqlite");
   const state = new SqliteState(databasePath);
@@ -847,7 +857,7 @@ test("a definite immediate Codex media rejection is reported and does not block 
       async startTurn(input) {
         started.push(input.text);
         if (input.attachments?.length) {
-          throw new Error("localImage input was rejected (code=-32602)");
+          throw new Error(rejection === "runtime-update" ? "E_CODEX_RUNTIME_UPDATE_BUSY" : "localImage input was rejected (code=-32602)");
         }
         return { turn: { id: "turn-after-rejection" } };
       },
@@ -894,7 +904,7 @@ test("a definite immediate Codex media rejection is reported and does not block 
     assert.deepEqual(started, ["读取被拒绝的附件", "后续消息仍应执行"]);
     assert.deepEqual(cleaned, ["bot-a/controller-a/75"]);
     assert.deepEqual(sent, [
-      "❌ Codex 提交失败：本次输入已被明确拒绝，未创建任务。请检查附件或输入后重试；详情请在 Codex Desktop 查看。",
+      rejection === "runtime-update" ? "⏳ 检测到 Codex 运行时已更新，其他任务仍在执行，暂未切换。本次请求未创建任务；请待其他任务结束后再发送。" : "❌ Codex 提交失败：本次输入已被明确拒绝，未创建任务。请检查附件或输入后重试；详情请在 Codex Desktop 查看。",
     ]);
     assert.equal(state.countQueuedTurns(), 0);
     assert.equal(state.countActiveDispatches(), 1);
@@ -906,6 +916,7 @@ test("a definite immediate Codex media rejection is reported and does not block 
     rmSync(directory, { force: true, recursive: true });
   }
 });
+}
 
 test("a definite rejection keeps its lease until the durable rejection commits", async () => {
   const directory = mkdtempSync(join(tmpdir(), "codex-ilink-rejection-order-"));

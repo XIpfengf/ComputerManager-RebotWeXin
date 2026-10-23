@@ -5,6 +5,9 @@ import type { AcquireTurnLeaseInput, ClaimBridgeTurnInput, MarkDesktopStopInput,
 import { AccountStore } from "./account-store.ts";
 import type { ChannelProfileService } from "../profiles/channel-profile.ts";
 import { recentHistory } from "./recent-history.ts";
+import type {DelegationService} from "../delegation/delegation-service.ts";
+import type {SqliteState} from "../bridge/sqlite-state.ts";
+import type {DelegationHandler} from "../delegation/ipc.ts";
 
 /** All accounts arbitrate in the original Guard DB; reconciliation sees only its own threads. */
 export class AccountLeaseStore extends SqliteTurnLeaseStore {
@@ -24,23 +27,40 @@ export class AccountLeaseStore extends SqliteTurnLeaseStore {
   override releaseStoppedDesktop(input: Pick<MarkDesktopStopInput, "threadId" | "turnId">) { this.check(input.threadId); return super.releaseStoppedDesktop(input); }
 }
 
-const ID_ARGUMENT_METHODS = new Set(["resumeThread", "ensureThread", "archiveThread", "unarchiveThread", "compactThread", "updateThreadModelSettings"]);
+const ID_ARGUMENT_METHODS = new Set(["resumeThread", "ensureThread", "archiveThread", "unarchiveThread", "compactThread", "updateThreadModelSettings", "readRecentTurns"]);
 const OBJECT_ARGUMENT_METHODS = new Set(["readThread", "setThreadName", "startTurn", "interruptTurn"]);
 
 /** A facade, not a second App Server. Owns event delivery and approval tokens. */
-export function accountCodex(runtime: CodexRuntime, accounts: AccountStore, name: string, profile?: ChannelProfileService): CodexRuntime {
+export function accountCodex(runtime: CodexRuntime, accounts: AccountStore, name: string, profile?: ChannelProfileService, delegation?:{service:DelegationService;state:SqliteState;register?:(handler:DelegationHandler)=>void}): CodexRuntime {
   const requestIds = new Set<number | string>();
+  const activeInputs=new Map<string,{text:string;turnId:string|undefined}>();
   const check = (id: unknown) => {
     if (typeof id !== "string" || accounts.owner(id) !== name) throw new Error("E_ACCOUNT_THREAD_OWNERSHIP");
   };
+  const delegate:DelegationHandler=async(context,args)=>{
+    check(context.threadId);if(!delegation)throw Error("委派服务不可用");
+    const dispatch=delegation.state.getDispatchIntentByTurnId(context.turnId),source=activeInputs.get(context.threadId);
+    if(!dispatch||dispatch.threadId!==context.threadId||dispatch.completedAtMs!==null||source?.turnId!==context.turnId)throw Error("委派必须来自当前微信任务");
+    return delegation.service.command(context,args,{text:source.text,contextToken:dispatch.contextToken,isLive:()=>activeInputs.get(context.threadId)===source&&delegation.state.getDispatchIntentByTurnId(context.turnId)?.completedAtMs===null});
+  };
+  delegation?.register?.(delegate);
   return new Proxy(runtime, {
     get(target, key) {
       if (key === "close") return () => undefined; // Host owns the shared runtime.
       if (key === "onEvent") return (listener: (e: CodexEvent) => void) => target.onEvent(event => {
         const id = event.params.threadId;
         if (typeof id === "string" && accounts.owner(id) !== name) return;
+        if(typeof id==="string"&&event.method==="turn/completed"){const turn=event.params.turn as {id?:string}|undefined;if(activeInputs.get(id)?.turnId===turn?.id)activeInputs.delete(id);}
         if (event.id !== undefined) {
           if (typeof id !== "string") return;
+          if(event.method==="item/tool/call"&&event.params.tool==="delegate_task"){
+            const handle=async()=>{
+              if(!delegation||event.params.namespace!==null||typeof event.params.turnId!=="string")throw Error("委派服务不可用");
+              if(!target.isServerRequestLive(event.id!))throw Error("委派请求已失效");
+              return delegate({threadId:id,turnId:event.params.turnId},event.params.arguments);
+            };
+            void handle().then(text=>{target.respondToServerRequest(event.id!,{success:true,contentItems:[{type:"inputText",text}]});}).catch(error=>{target.respondToServerRequest(event.id!,{success:false,contentItems:[{type:"inputText",text:error instanceof Error?error.message:"委派失败，未确认投递。"}]});});return;
+          }
           if (profile && event.method === "item/tool/call" && event.params.tool === "channel_history") {
             void channelHistory(target, accounts, name, event.params.arguments).then(text => {
               target.respondToServerRequest(event.id!, { success: true, contentItems: [{ type: "inputText", text }] });
@@ -55,6 +75,10 @@ export function accountCodex(runtime: CodexRuntime, accounts: AccountStore, name
         listener(event);
       });
       if (key === "isServerRequestLive") return (id: number | string) => requestIds.has(id) && target.isServerRequestLive(id);
+      if(key==="startTurn")return async(input:Parameters<CodexRuntime["startTurn"]>[0])=>{
+        check(input.threadId);const source={text:input.text,turnId:undefined as string|undefined};activeInputs.set(input.threadId,source);
+        try{const result=await target.startTurn(input);source.turnId=result.turn.id;return result;}catch(error){if(activeInputs.get(input.threadId)===source)activeInputs.delete(input.threadId);throw error;}
+      };
       if (key === "respondToServerRequest") return (id: number | string, result: Record<string, unknown>) => {
         if (!requestIds.delete(id)) return false;
         return target.respondToServerRequest(id, result);
@@ -72,6 +96,7 @@ export function accountCodex(runtime: CodexRuntime, accounts: AccountStore, name
           return typeof id === "string" && accounts.owner(id) === name;
         }) };
       };
+      if(key==="findDelegationThreads")return async(...args:Parameters<CodexRuntime["findDelegationThreads"]>)=>{const r=await target.findDelegationThreads(...args);return {...r,data:r.data.filter(t=>typeof (t as {id?:unknown})?.id==="string"&&accounts.owner((t as {id:string}).id)===name)};};
       const value = Reflect.get(target, key);
       if (typeof value !== "function") return value;
       if (typeof key === "string" && (ID_ARGUMENT_METHODS.has(key) || OBJECT_ARGUMENT_METHODS.has(key))) {

@@ -20,6 +20,13 @@ import { ProfileStore } from "../profiles/profile-store.ts";
 import { ChannelProfileService } from "../profiles/channel-profile.ts";
 import { HistoryService } from "../history/history-service.ts";
 import { isDesktopThreadPinned } from "../windows/desktop-pins.ts";
+import {runtimeConfigurationFingerprint} from "../windows/runtime-configuration.ts";
+import {DelegationService,DelegationStore,initializeDelegationPermissions} from "../delegation/delegation-service.ts";
+import {OfficialDesktopTools} from "../delegation/desktop-tools.ts";
+import {startDelegationServer,type DelegationHandler} from "../delegation/ipc.ts";
+import {userPipePath} from "../windows/runtime-paths.ts";
+import type {Server} from "node:net";
+import {selectDelegationTargets} from "../delegation/catalog.ts";
 
 /** One host and execution runtime; background reads have a separate fault domain. */
 export async function runMultiAccountHost(options: RunWindowsHostOptions): Promise<void> {
@@ -45,18 +52,29 @@ export async function runMultiAccountHost(options: RunWindowsHostOptions): Promi
   let codex: CodexRuntime | undefined;
   let observer: CodexRuntime | undefined;
   let receiver: HookReceiver | undefined;
+  let delegationServer:Server|undefined;
+  const delegationHandlers=new Map<string,DelegationHandler>();
   const power = new PowerRequestController(createPowerRequestCommand());
   const counts = new Map<string, number>();
+  const delegations=new Map<string,DelegationService>();
   let powerWork = Promise.resolve();
   try {
     store = new AccountStore(paths.dataDirectory);
     store.importPrimary();
     const accounts = store;
+    const delegationStore=new DelegationStore(accounts.database);delegationStore.recover();
+    initializeDelegationPermissions(accounts.root,accounts.list().map(a=>a.name));
+    const delegationPipe=`${userPipePath(environment)}-delegation`;
+    delegationServer=await startDelegationServer(delegationPipe,async(context,args)=>{const handler=delegationHandlers.get(accounts.owner(context.threadId));if(!handler)throw Error("委派通道未准备好");return handler(context,args);});
     const bridgeInstanceId = randomUUID();
-    codex = await CodexRuntime.create({ bridgeInstanceId, command: desktopCodexAppServerCommand(environment), environment,
+    codex = await CodexRuntime.create({ bridgeInstanceId, command: desktopCodexAppServerCommand(environment), environment,delegationPipe,
+      commandResolver:()=>desktopCodexAppServerCommand(environment),
+      configurationFingerprint:()=>runtimeConfigurationFingerprint(environment),
       onDiagnostic:event=>console.error(`[ilink:execution] ${JSON.stringify({at:new Date().toISOString(),...event})}`) });
     const runtime = codex;
     observer = await CodexRuntime.create({ bridgeInstanceId, command: desktopCodexAppServerCommand(environment), environment,
+      commandResolver:()=>desktopCodexAppServerCommand(environment),
+      configurationFingerprint:()=>runtimeConfigurationFingerprint(environment),
       onDiagnostic:event=>console.error(`[ilink:observer] ${JSON.stringify({at:new Date().toISOString(),...event})}`) });
     const observationRuntime = observer;
     const profiles = new ProfileStore(accounts.database, accounts.root);
@@ -83,7 +101,15 @@ export async function runMultiAccountHost(options: RunWindowsHostOptions): Promi
         const ilink = new ILinkClient({ onAuthExpired: ({ pausedUntilMs }) => statuses.set(name, { phase: "auth-paused", pausedUntilMs }) });
         const idle = () => state.getBridgeSettings().awayTimeoutMinutes * 60_000;
         const profile = new ChannelProfileService({ store: profiles, account: name, runtime, projects: () => readDesktopProjects(desktopGlobalStatePath(environment)) });
-        const scopedCodex=accountCodex(runtime,accounts,name,profile);
+        const delegation=new DelegationService({account:name,store:delegationStore,root:accounts.root,
+          owner:id=>accounts.owner(id),explicitOwner:id=>accounts.explicitOwner(id),tools:()=>new OfficialDesktopTools(environment),
+          readResult:async(id,turn)=>{let cursor:string|undefined;const seen=new Set<string>();for(let n=0;n<50;n++){const page=await observationRuntime.readRecentTurns(id,cursor);const found=(page.data as Array<Record<string,any>>).find(t=>t.id===turn);if(found)return found.items.filter((i:any)=>i.type==="agentMessage"&&i.phase==="final_answer").map((i:any)=>i.text).join("\n");if(typeof page.nextCursor!=="string"||seen.has(page.nextCursor))break;cursor=page.nextCursor;seen.add(cursor);}throw Error("E_DELEGATION_RESULT_NOT_FOUND");},
+          resolve:async selector=>{
+            if(/^[0-9a-f-]{36}$/iu.test(selector)){const {thread}=await observationRuntime.readThread({threadId:selector,includeTurns:false});return [{id:selector,title:String(thread.name??thread.preview??selector)}];}
+            const matches:Array<{id:string;title:string}>=[];let cursor:string|undefined;const seen=new Set<string>();
+            for(let n=0;n<50;n++){const page=await observationRuntime.findDelegationThreads(selector,cursor);for(const t of page.data){const x=t as Record<string,unknown>;const title=String(x.name??x.preview??"");if(typeof x.id==="string")matches.push({id:x.id,title});}if(!page.nextCursor)break;if(seen.has(page.nextCursor))throw Error("E_DELEGATION_CURSOR_LOOP");cursor=page.nextCursor;seen.add(cursor);if(n===49)throw Error("会话列表尚未检索完整，请提供目标ID。");}return selectDelegationTargets(matches,selector);
+          },notify:async(job,text,key)=>await daemon?.notifyDelegation(text,key,job.contextToken)??false});
+        const scopedCodex=accountCodex(runtime,accounts,name,profile,{service:delegation,state,register:handler=>delegationHandlers.set(name,handler)});
         const scopedObserver=accountCodex(observationRuntime,accounts,name);
         const historyCodex=new Proxy(scopedCodex,{get(target,key){return key === "readThread" ? scopedObserver.readThread : Reflect.get(target,key);}});
         const history=new HistoryService({accounts,account:name,codex:historyCodex,state,leases,instanceId:bridgeInstanceId,now:Date.now,approvalBusy:id=>daemon?.hasPendingApproval(id)??true,desktopPinned:id=>isDesktopThreadPinned(id,environment),notify:async(text,id)=>{await daemon?.notifyHistory(text,id);}});
@@ -113,6 +139,7 @@ export async function runMultiAccountHost(options: RunWindowsHostOptions): Promi
         channels.set(name, channel);
         statuses.set(name, { phase: "starting" });
         await daemon.start();
+        delegations.set(name,delegation);
         statuses.set(name, { phase: "running" });
         const polling = runSerialPollingLoop({
           signal: abort.signal,
@@ -127,6 +154,7 @@ export async function runMultiAccountHost(options: RunWindowsHostOptions): Promi
       } catch (error) {
         if (daemon) await daemon.stop().catch(() => {});
         channels.delete(name); leases?.close(); state.close();
+        delegationHandlers.delete(name);delegations.delete(name);
         statuses.set(name, { phase: "failed" });
         throw error;
       }
@@ -138,6 +166,7 @@ export async function runMultiAccountHost(options: RunWindowsHostOptions): Promi
     await hooks.drainSpool();
     phase = "running";
     while (!abort.signal.aborted) {
+      for(const delegation of delegations.values()){if(abort.signal.aborted)break;await delegation.tick().catch(()=>console.error("[ilink] delegation maintenance deferred"));}
       for (const account of accounts.list()) {
         if (abort.signal.aborted) break;
         if (!channels.has(account.name)) await startAccount(account.name).catch(() => console.error(`[ilink:${account.name}] account startup failed; will retry`));
@@ -161,6 +190,7 @@ export async function runMultiAccountHost(options: RunWindowsHostOptions): Promi
     await attempt(() => receiver?.close());
     await attempt(() => codex?.close());
     await attempt(() => observer?.close());
+    if(delegationServer)await attempt(()=>new Promise<void>(resolve=>delegationServer!.close(()=>resolve())));
     await attempt(() => powerWork);
     await attempt(() => power.close());
     for (const channel of channels.values()) { await attempt(() => channel.leases.close()); await attempt(() => channel.state.close()); }

@@ -57,6 +57,7 @@ export class AccountStore {
     // threads are explicitly registered before being used by its Bridge.
     return row?.name ?? PRIMARY_ACCOUNT;
   }
+  explicitOwner(threadId:string):string|undefined {return (this.database.prepare("SELECT account_name AS name FROM thread_accounts WHERE thread_id=?").get(threadId) as {name:string}|undefined)?.name;}
   claimThread(name: string, threadId: string): void {
     assertAccountName(name);
     this.database.prepare("INSERT OR IGNORE INTO thread_accounts(thread_id,account_name) VALUES(?,?)").run(threadId, name);

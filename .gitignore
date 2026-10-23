@@ -2,3 +2,29 @@
 node_modules/
 dist/
 *.log
+
+# Private runtime and credentials; keep portable example templates public.
+.env
+.env.*
+!.env.example
+!.env.template
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+delegation-permissions.json
+/Codex_iLink/
+/profiles/
+/accounts/
+/Inbox/
+/media/
+/secrets/
+
+# Machine-specific configuration copied into the repository root.
+/config.toml
+/config.json
+/credentials.json
+/tokens.json
+*.local.json
+*.db
+*.db-*

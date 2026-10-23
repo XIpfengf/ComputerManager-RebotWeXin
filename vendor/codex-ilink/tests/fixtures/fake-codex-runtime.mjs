@@ -170,6 +170,7 @@ lines.on("line", (line) => {
         threadListParams: message.params,
       },
     };
+    if(process.argv.includes("--desktop-source-catalog")&&message.params?.sourceKinds?.includes("appServer")&&message.params?.searchTerm==="Desktop验收")result.data=[{id:"desktop-fixture",name:"Desktop验收",source:"appServer"}];
     if (process.argv.includes("--event-before-list")) {
       process.stdout.write(
         `${JSON.stringify({

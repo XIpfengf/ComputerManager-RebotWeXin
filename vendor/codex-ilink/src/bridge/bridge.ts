@@ -247,6 +247,10 @@ export class BridgeEngine {
   readonly #history: HistoryPort | undefined;
   hasPendingApproval(threadId: string): boolean { return this.#approvals?.list().some(a=>a.threadId===threadId)??false; }
   async notifyHistory(text: string, id: string): Promise<void> { const token=this.#state.getILinkState(this.#session.botId)?.contextToken;if(token)await this.#send(token,text,id); }
+  async notifyDelegation(text:string,id:string,fallbackToken:string):Promise<boolean>{
+    const token=this.#state.getILinkState(this.#session.botId)?.contextToken||fallbackToken;if(!token)return false;
+    const parts=splitWechatText(text);for(let i=0;i<parts.length;i++)await this.#send(token,parts[i]!,`${id}:${i}`);return true;
+  }
   readonly #profile: ProfilePort | undefined;
   readonly #completingTurns = new Map<string, Promise<boolean>>();
   readonly #approvals: ApprovalCoordinator | undefined;
@@ -2691,6 +2695,7 @@ export class BridgeEngine {
           lease: lease.lease,
           operationId,
           contextToken: input.contextToken,
+          runtimeUpdateBusy: error instanceof Error && error.message === "E_CODEX_RUNTIME_UPDATE_BUSY",
         });
         await this.#drainQueuedTurns();
         return 1;
@@ -3091,6 +3096,7 @@ export class BridgeEngine {
               dedupeKey: dispatch.dedupeKey,
               lease: lease.lease,
               operationId,
+              runtimeUpdateBusy: error instanceof Error && error.message === "E_CODEX_RUNTIME_UPDATE_BUSY",
             });
             continue;
           }
@@ -3261,6 +3267,7 @@ export class BridgeEngine {
   }
 
   async #completeRejectedDispatch(input: {
+    runtimeUpdateBusy?: boolean;
     contextToken: string;
     dedupeKey: string;
     lease: TurnLease;
@@ -3269,7 +3276,7 @@ export class BridgeEngine {
     const rejectedOutbox = this.#state.rejectPendingDispatchWithOutbox({
       operationId: input.operationId,
       outbox: {
-        body: CODEX_SUBMISSION_REJECTED_TEXT,
+        body: input.runtimeUpdateBusy ? "⏳ 检测到 Codex 运行时已更新，其他任务仍在执行，暂未切换。本次请求未创建任务；请待其他任务结束后再发送。" : CODEX_SUBMISSION_REJECTED_TEXT,
         clientId: `codex-ilink:${input.operationId}:rejected`,
         contextToken: input.contextToken,
         createdAtMs: this.#now(),

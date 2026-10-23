@@ -328,10 +328,24 @@ test("Desktop codex discovery chooses the newest installed runtime", (t) => {
   const newer = join(newerDirectory, "codex.exe");
   writeFileSync(older, "older");
   writeFileSync(newer, "newer");
+  for(const directory of [olderDirectory,newerDirectory]) for(const helper of ["codex-code-mode-host.exe","codex-command-runner.exe"])writeFileSync(join(directory,helper),"fixture");
   utimesSync(older, new Date(1_000), new Date(1_000));
   utimesSync(newer, new Date(2_000), new Date(2_000));
 
   assert.equal(findDesktopCodexExecutable({ LOCALAPPDATA: localAppData }), newer);
+});
+
+test("retired cached Codex bundle is replaced when its code-mode helper was removed", t => {
+  const local=mkdtempSync(join(tmpdir(),"ilink-retired-runtime-"));
+  t.after(()=>rmSync(local,{recursive:true,force:true}));
+  const root=join(local,"OpenAI","Codex","bin");
+  const old=join(root,"old"), current=join(root,"current");
+  mkdirSync(old,{recursive:true});mkdirSync(current,{recursive:true});
+  writeFileSync(join(old,"codex.exe"),"still locked by old process");
+  for(const name of ["codex.exe","codex-code-mode-host.exe","codex-command-runner.exe"])writeFileSync(join(current,name),"complete");
+  const result=findDesktopCodexExecutable({LOCALAPPDATA:local,CODEX_ILINK_CODEX_EXE:join(old,"codex.exe")});
+  assert.equal(result,join(current,"codex.exe"));
+  assert.equal(findDesktopCodexExecutable({LOCALAPPDATA:join(local,"MSIX-redirect"),CODEX_ILINK_CODEX_EXE:join(old,"codex.exe")}),join(current,"codex.exe"));
 });
 
 test("configured Desktop codex path is validated before use", (t) => {

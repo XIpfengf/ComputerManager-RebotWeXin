@@ -146,4 +146,12 @@ config/history只接受明确独立的文字管理命令；语音转写、引用
 
 排查从PowerShell的status、doctor和startup status开始。私有目录通常为%LOCALAPPDATA%\Codex_iLink；商店版可能重定向至应用包LocalCache下，根启动脚本复用已绑定state.sqlite的实际路径。人设保存在profiles/<别名>/profile.json，状态库另存修订、快照和归档策略；完整聊天由Codex用户目录保存。具体见 [目录说明](directory-layout.md)。凭据、真实人设、数据库和原始日志不能作为公开源码提交。
 
-发布前已重新执行类型检查和558项全量测试，全部通过。Windows重启、真实跨30天调度、完整人设梯度和所有软件/媒体/网络场景仍需各自实机验收，已验证范围见 [V1.0.0实现](channel-profile-implementation.md) 与历史策略。
+当前验证和未覆盖范围统一见 [验收说明](acceptance.md)，文档更新职责见 [文档职责](documentation-map.md)。
+
+## 7. 桌面操作与跨会话委派
+
+可以直接描述已授权的桌面操作；窗口可读和任务成功须以实际工具结果为准，不能凭进程存在推断完成。失败时先检查工具配置与连接，见 [Computer Use 通道](computer-use-channel.md)。
+
+委派示例：`告诉「会话准确名称」，检查指定任务并把最终结果返回给我。` 管家不切换自身会话，由目标沿用自己的上下文、模型与权限。`查询委派列表`、`查询委派 <编号> 的状态`、`取消尚未投递的委派 <编号>` 用于跟踪。忙碌时排队，不打断；名称不唯一时需补充名称或 ID。已执行任务不能用取消队列命令停止。
+
+其他微信共享未分配 Desktop 会话须由部署者在私有 `delegation-permissions.json` 按 ID 授权，不能抢占其他通道的明确归属。结果以文本回传，委派附件尚未实现。完整授权结构、状态和恢复规则见 [微信跨会话委派](session-delegation.md)。

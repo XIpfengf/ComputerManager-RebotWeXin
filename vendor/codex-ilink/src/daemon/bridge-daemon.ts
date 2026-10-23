@@ -124,6 +124,7 @@ type TerminalNotificationEvidence = TerminalNotificationJob["evidence"];
 export class BridgeDaemon {
   hasPendingApproval(threadId: string): boolean { return this.#bridge?.hasPendingApproval(threadId)??false; }
   async notifyHistory(text: string,id: string): Promise<void> {await this.#bridge?.notifyHistory(text,id);}
+  async notifyDelegation(text:string,id:string,token:string):Promise<boolean>{return await this.#bridge?.notifyDelegation(text,id,token)??false;}
   readonly #options: BridgeDaemonOptions;
   #bridge: BridgeEngine | undefined;
   readonly #codexEventTasks = new Set<Promise<unknown>>();

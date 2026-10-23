@@ -2,9 +2,10 @@ import { closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { findDesktopCodexExecutable } from '../vendor/codex-ilink/src/windows/host.ts';
 
 const [localAppDataDirectory, codexExecutable] = process.argv.slice(2);
-for (const path of [localAppDataDirectory, codexExecutable]) {
+for (const path of [localAppDataDirectory]) {
   if (!path || !isAbsolute(path) || !existsSync(path)) throw new Error('Startup path unavailable');
 }
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -13,12 +14,14 @@ const logDirectory = join(localAppDataDirectory, 'Codex_iLink', 'logs');
 mkdirSync(logDirectory, {recursive:true});
 const log = openSync(join(logDirectory, 'startup.log'), 'a');
 try {
+  const runtimeEnvironment = {...process.env,...(codexExecutable ? {CODEX_ILINK_CODEX_EXE:codexExecutable} : {})};
+  const resolvedCodex = findDesktopCodexExecutable(runtimeEnvironment);
   // Only the scheduled child receives these explicit environment values.
   // Store-packaged Codex redirects LocalAppData; reuse its actual bound state.
   const result = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning',
     '--experimental-strip-types', join(implementation, 'src', 'cli', 'main.ts'), '__run'], {
     cwd: implementation,
-    env: {...process.env, LOCALAPPDATA:localAppDataDirectory, CODEX_ILINK_CODEX_EXE:codexExecutable},
+    env: {...process.env, LOCALAPPDATA:localAppDataDirectory, CODEX_ILINK_CODEX_EXE:resolvedCodex},
     shell:false, windowsHide:true, stdio:['ignore',log,log],
   });
   if (result.error) throw result.error;
