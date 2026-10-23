@@ -170,6 +170,7 @@ lines.on("line", (line) => {
         threadListParams: message.params,
       },
     };
+    if(process.argv.includes("--desktop-source-catalog")&&message.params?.sourceKinds?.includes("appServer")&&message.params?.searchTerm==="Desktop验收")result.data=[{id:"desktop-fixture",name:"Desktop验收",source:"appServer"}];
     if (process.argv.includes("--event-before-list")) {
       process.stdout.write(
         `${JSON.stringify({
@@ -197,6 +198,11 @@ lines.on("line", (line) => {
         includeTurns: message.params.includeTurns,
       },
     });
+    return;
+  }
+
+  if (message.method === "thread/turns/list") {
+    respond(message.id, {data:[],nextCursor:null});
     return;
   }
 
@@ -253,7 +259,7 @@ lines.on("line", (line) => {
 
   if (message.method === "thread/resume") {
     if (
-      !hasExactKeys(message.params, ["developerInstructions", "threadId"])
+      !hasExactKeys(message.params, ["developerInstructions", "excludeTurns", "threadId"]) || message.params.excludeTurns !== true
     ) {
       rejectUnexpectedParams(message);
       return;

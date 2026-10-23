@@ -9,7 +9,7 @@ import {
   type Server,
   type Socket,
 } from "node:net";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import type { AppServerCommand } from "../codex/protocol.ts";
 import { ILinkError } from "../ilink/protocol.ts";
@@ -226,24 +226,30 @@ export function requestHostControl(
 export function findDesktopCodexExecutable(
   environment: NodeJS.ProcessEnv = process.env,
 ): string {
+  let binRoot = environment.LOCALAPPDATA ? join(environment.LOCALAPPDATA,"OpenAI","Codex","bin") : null;
+  const complete = (exe: string) => isFile(exe) && ["codex-code-mode-host.exe","codex-command-runner.exe"].every(name=>isFile(join(dirname(exe),name)));
   const configured = environment.CODEX_ILINK_CODEX_EXE?.trim();
   if (configured) {
     const executable = resolve(configured);
-    if (!isFile(executable)) {
+    const configuredRoot = dirname(dirname(executable));
+    const managed = /[\\/]OpenAI[\\/]Codex[\\/]bin$/iu.test(configuredRoot);
+    if (managed && !complete(executable)) {
+      binRoot = configuredRoot; // MSIX can redirect LOCALAPPDATA, while binaries stay in the real user cache.
+      // Desktop updates may leave the locked old executable but remove helpers.
+      // A task's historical cache path is a hint, not a usable runtime pin.
+    } else if (!isFile(executable)) {
       throw new Error("E_DESKTOP_CODEX_NOT_FOUND");
-    }
-    return executable;
+    } else return executable;
   }
 
   const localAppData = environment.LOCALAPPDATA;
-  if (!localAppData) throw new Error("E_LOCALAPPDATA_REQUIRED");
-  const binRoot = join(localAppData, "OpenAI", "Codex", "bin");
+  if (!localAppData && !binRoot) throw new Error("E_LOCALAPPDATA_REQUIRED");
   let candidates: string[];
   try {
-    candidates = readdirSync(binRoot, { withFileTypes: true })
+    candidates = readdirSync(binRoot!, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
-      .map((entry) => join(binRoot, entry.name, "codex.exe"))
-      .filter(isFile)
+      .map((entry) => join(binRoot!, entry.name, "codex.exe"))
+      .filter(complete)
       .sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs);
   } catch (error) {
     throw new Error("E_DESKTOP_CODEX_NOT_FOUND", { cause: error });

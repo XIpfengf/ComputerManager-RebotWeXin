@@ -93,6 +93,8 @@ export type BridgeDaemonOptions = {
   activeTaskCounter?: ActiveTaskCounterPort;
   bridgeInstanceId: string;
   codex: DaemonCodexPort;
+  /** Background Stop/history reads must not share the live execution pipe. */
+  terminalReader?: Pick<DaemonCodexPort,"readThread">;
   eventQuiesceTimeoutMs?: number;
   hookReceiver: HookReceiverPort;
   ilink: DaemonILinkPort;
@@ -122,6 +124,7 @@ type TerminalNotificationEvidence = TerminalNotificationJob["evidence"];
 export class BridgeDaemon {
   hasPendingApproval(threadId: string): boolean { return this.#bridge?.hasPendingApproval(threadId)??false; }
   async notifyHistory(text: string,id: string): Promise<void> {await this.#bridge?.notifyHistory(text,id);}
+  async notifyDelegation(text:string,id:string,token:string):Promise<boolean>{return await this.#bridge?.notifyDelegation(text,id,token)??false;}
   readonly #options: BridgeDaemonOptions;
   #bridge: BridgeEngine | undefined;
   readonly #codexEventTasks = new Set<Promise<unknown>>();
@@ -221,7 +224,7 @@ export class BridgeDaemon {
       outboundDirectory,
       now: this.#options.now,
       ...(this.#options.presence ? { presence: this.#options.presence } : {}),
-      readThread: (input) => this.#options.codex.readThread(input),
+      readThread: (input) => (this.#options.terminalReader ?? this.#options.codex).readThread(input),
       session: this.#options.session,
       state: this.#options.state,
     });
@@ -572,7 +575,7 @@ export class BridgeDaemon {
       if (!this.#started || signal?.aborted) return;
       let readSucceeded = false;
       try {
-        const read = await this.#options.codex.readThread({
+        const read = await (this.#options.terminalReader ?? this.#options.codex).readThread({
           includeTurns: true,
           threadId,
         });
@@ -854,7 +857,7 @@ export class BridgeDaemon {
       if (observation.state !== "away") continue;
       try {
         await this.#options.codex.ensureThread?.(candidate.threadId);
-        const read = await this.#options.codex.readThread({
+        const read = await (this.#options.terminalReader ?? this.#options.codex).readThread({
           includeTurns: true,
           threadId: candidate.threadId,
         });

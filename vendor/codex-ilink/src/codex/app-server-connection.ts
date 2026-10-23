@@ -22,13 +22,16 @@ export type AppServerConnectionOptions = {
   command: AppServerCommand;
   environment?: NodeJS.ProcessEnv;
   requestTimeoutMs?: number;
+  onDiagnostic?: (event: {kind:"protocol"|"transport"|"timeout";pendingMethods:string[];lineChars?:number}) => void;
 };
 
 export class AppServerConnection {
   readonly #child: ChildProcessWithoutNullStreams;
   readonly #eventListeners = new Set<AppServerEventListener>();
+  readonly #terminationListeners = new Set<(error: Error) => void>();
   readonly #pending = new Map<number, PendingRequest>();
   readonly #requestTimeoutMs: number;
+  readonly #onDiagnostic: AppServerConnectionOptions["onDiagnostic"];
   #closed = false;
   #nextId = 1;
   #terminalError: Error | undefined;
@@ -36,6 +39,7 @@ export class AppServerConnection {
   private constructor(options: AppServerConnectionOptions) {
     const [executable, ...args] = options.command;
     this.#requestTimeoutMs = options.requestTimeoutMs ?? 20_000;
+    this.#onDiagnostic = options.onDiagnostic;
     this.#child = spawn(executable, args, {
       env: controlledEnvironment(
         options.environment ?? process.env,
@@ -105,6 +109,7 @@ export class AppServerConnection {
         const pending = this.#pending.get(id);
         if (!pending) return;
         this.#pending.delete(id);
+        this.#diagnose({kind:"timeout",pendingMethods:[pending.method]});
         pending.reject(
           pending.outcomeUnknownOnTimeoutOrEof
             ? new CodexOutcomeUnknownError(pending.method, "timeout")
@@ -148,6 +153,11 @@ export class AppServerConnection {
     return () => this.#eventListeners.delete(listener);
   }
 
+  onTermination(listener: (error: Error) => void): () => void {
+    this.#terminationListeners.add(listener);
+    return () => this.#terminationListeners.delete(listener);
+  }
+
   notify(method: string, params: JsonObject): void {
     this.#write({ method, params });
   }
@@ -161,10 +171,12 @@ export class AppServerConnection {
     try {
       parsed = JSON.parse(line) as unknown;
     } catch {
+      this.#diagnose({kind:"protocol",pendingMethods:[...this.#pending.values()].map(p=>p.method),lineChars:line.length});
       this.#terminate(new Error("app-server emitted malformed JSON on stdout"));
       return;
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      this.#diagnose({kind:"protocol",pendingMethods:[...this.#pending.values()].map(p=>p.method),lineChars:line.length});
       this.#terminate(new Error("app-server emitted a non-object JSON message"));
       return;
     }
@@ -229,9 +241,18 @@ export class AppServerConnection {
   }
 
   #terminate(error: Error, reason?: CodexOutcomeUnknownReason): void {
+    const first = !this.#terminalError;
     if (!this.#terminalError) this.#terminalError = error;
+    if (first && !this.#closed) {
+      if (!/malformed JSON|non-object JSON/.test(error.message)) this.#diagnose({kind:"transport",pendingMethods:[...this.#pending.values()].map(p=>p.method)});
+      for (const listener of this.#terminationListeners) listener(this.#terminalError);
+    }
     this.#rejectAll(this.#terminalError, reason);
     if (!this.#closed && this.#child.exitCode === null) this.#child.kill();
+  }
+
+  #diagnose(event: Parameters<NonNullable<AppServerConnectionOptions["onDiagnostic"]>>[0]): void {
+    try { this.#onDiagnostic?.(event); } catch { /* Diagnostics cannot break transport cleanup. */ }
   }
 
   #write(message: JsonObject): void {

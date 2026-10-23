@@ -17,4 +17,4 @@ enableWindowsStartupTask({
     join(root, 'scripts', 'startup-bridge.mjs'), dirname(stateDirectory),
     realpathSync.native(findDesktopCodexExecutable())],
 });
-console.log('已启用当前用户登录启动，并固定已绑定状态库与 Codex 可执行路径。');
+console.log('已启用当前用户登录启动，固定已绑定状态库；启动时重新校验 Desktop Codex 运行时。');

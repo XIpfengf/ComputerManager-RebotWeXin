@@ -50,6 +50,15 @@ const fakeCodexRuntime = fileURLToPath(
   new URL("./fixtures/fake-codex-runtime.mjs", import.meta.url),
 );
 
+test("delegated result delivery preserves every text chunk and deduplicates retries",async()=>{
+ await withBridge(async({bridge,sent})=>{
+   const text=("跨会话结果。\n\n".repeat(1000))+"完整结尾";
+   assert.equal(await bridge.notifyDelegation(text,"delegation:fixture:result","ctx-fixture"),true);
+   assert(sent.length>2);assert.equal(sent.map(x=>x.text).join(""),text);
+   const count=sent.length;await bridge.notifyDelegation(text,"delegation:fixture:result","ctx-fixture");assert.equal(sent.length,count);
+ });
+});
+
 test("help is deduplicated, persisted before send, and confirmed after send", async () => {
   await withBridge(async ({ bridge, sent, state }) => {
     const message = textMessage(1, "help");
@@ -827,7 +836,8 @@ test("media download failures and raw voice return explicit errors without start
   }
 });
 
-test("a definite immediate Codex media rejection is reported and does not block the next FIFO turn", async () => {
+for (const rejection of ["media","runtime-update"]) {
+test(`a definite immediate Codex rejection (${rejection}) is reported and does not block the next FIFO turn`, async () => {
   const directory = mkdtempSync(join(tmpdir(), "codex-ilink-media-rejected-"));
   const databasePath = join(directory, "state.sqlite");
   const state = new SqliteState(databasePath);
@@ -847,7 +857,7 @@ test("a definite immediate Codex media rejection is reported and does not block 
       async startTurn(input) {
         started.push(input.text);
         if (input.attachments?.length) {
-          throw new Error("localImage input was rejected (code=-32602)");
+          throw new Error(rejection === "runtime-update" ? "E_CODEX_RUNTIME_UPDATE_BUSY" : "localImage input was rejected (code=-32602)");
         }
         return { turn: { id: "turn-after-rejection" } };
       },
@@ -894,7 +904,7 @@ test("a definite immediate Codex media rejection is reported and does not block 
     assert.deepEqual(started, ["读取被拒绝的附件", "后续消息仍应执行"]);
     assert.deepEqual(cleaned, ["bot-a/controller-a/75"]);
     assert.deepEqual(sent, [
-      "❌ Codex 提交失败：本次输入已被明确拒绝，未创建任务。请检查附件或输入后重试；详情请在 Codex Desktop 查看。",
+      rejection === "runtime-update" ? "⏳ 检测到 Codex 运行时已更新，其他任务仍在执行，暂未切换。本次请求未创建任务；请待其他任务结束后再发送。" : "❌ Codex 提交失败：本次输入已被明确拒绝，未创建任务。请检查附件或输入后重试；详情请在 Codex Desktop 查看。",
     ]);
     assert.equal(state.countQueuedTurns(), 0);
     assert.equal(state.countActiveDispatches(), 1);
@@ -906,6 +916,7 @@ test("a definite immediate Codex media rejection is reported and does not block 
     rmSync(directory, { force: true, recursive: true });
   }
 });
+}
 
 test("a definite rejection keeps its lease until the durable rejection commits", async () => {
   const directory = mkdtempSync(join(tmpdir(), "codex-ilink-rejection-order-"));
@@ -1801,6 +1812,26 @@ test("startup reconciliation preserves a sanitized network failure over a partia
   }
 });
 
+test("connection protocol failure explains this request without claiming the target task stopped", async () => {
+  const directory=mkdtempSync(join(tmpdir(),"ilink-protocol-error-"));
+  const state=new SqliteState(join(directory,"state.sqlite"));
+  const leases=new SqliteTurnLeaseStore(join(directory,"state.sqlite"));
+  const sent: SendInput[]=[];
+  state.bindController({accountId:"bot-a",boundAtMs:1,userId:"controller-a"});
+  state.createDispatchIntent({body:"汇报另一个任务进度",contextToken:"ctx",createdAtMs:100,dedupeKey:"msg",operationId:"op",threadId:"thread"});
+  state.markDispatchAccepted("op","turn",101);
+  leases.tryAcquire({createdAtMs:100,instanceId:"bridge",operationId:"op",owner:"bridge",threadId:"thread",turnId:"turn"});
+  const bridge=new BridgeEngine({bridgeInstanceId:"bridge",codex:{async readThread(){assert.fail("must not read corrupted history again");},async resumeThread(id){return {thread:{id}};},async startTurn(){assert.fail("must not replay task");}},ilink:{async sendText(input){sent.push(input);return {accepted:true,clientId:input.clientId};}},leases,state,session,now:()=>200,newId:()=>"unused",mainThreadId:"main"});
+  try {
+    await bridge.ingestCodexEvent({method:"error",params:{threadId:"thread",turnId:"turn",willRetry:false,error:{message:"secret payload",codexErrorInfo:{bridgeConnectionFailure:"protocol"}}}});
+    await bridge.ingestCodexEvent({method:"turn/completed",params:{threadId:"thread",turn:{id:"turn",status:"interrupted",error:null}}});
+    assert.match(sent[0]!.text,/本轮微信请求/);
+    assert.match(sent[0]!.text,/数据格式异常/);
+    assert.match(sent[0]!.text,/不代表.*目标任务/);
+    assert.doesNotMatch(sent[0]!.text,/secret|请重试/);
+  } finally {bridge.close();leases.close();state.close();rmSync(directory,{recursive:true,force:true});}
+});
+
 test("startup reconciliation reports an interrupted turn without forwarding commentary", async () => {
   const directory = mkdtempSync(join(tmpdir(), "codex-ilink-interrupted-turn-"));
   const databasePath = join(directory, "state.sqlite");
@@ -1891,7 +1922,7 @@ test("startup reconciliation reports an interrupted turn without forwarding comm
     await bridge.recoverPendingWork();
     assert.equal(leases.getLease("thread-interrupted"), null);
     assert.deepEqual(sent.map(({ text }) => text), [
-      "❌ Codex 任务已中断，未生成最终结果。请重试；详情请在 Codex Desktop 查看。",
+      "❌ 本轮微信请求已中断，未取得最终结果。Codex 未提供明确中断原因，不能据此判断其他会话的任务是否停止。未自动重试执行任务；可继续询问状态，或在 Codex Desktop 查看本轮记录。",
     ]);
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.deepEqual(typing, ["typing", "cancel"]);
@@ -2003,7 +2034,7 @@ test("startup reconciliation cancels restored typing when a terminal Desktop lea
         dispatchCompletedAtMs: 200,
         leaseTurnId: "turn-missed-stop-desktop",
         sent: [
-          "❌ Codex 任务已中断，未生成最终结果。请重试；详情请在 Codex Desktop 查看。",
+          "❌ 本轮微信请求已中断，未取得最终结果。Codex 未提供明确中断原因，不能据此判断其他会话的任务是否停止。未自动重试执行任务；可继续询问状态，或在 Codex Desktop 查看本轮记录。",
         ],
         typing: ["typing", "cancel"],
       },

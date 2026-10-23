@@ -13,6 +13,70 @@ import {
 const fakeRuntime = resolve("tests/fixtures/fake-codex-runtime.mjs");
 const NON_TIMING_TEST_REQUEST_TIMEOUT_MS = 5_000;
 
+test("delegation name lookup includes Desktop appServer threads omitted by interactive defaults",async()=>{
+ const runtime=await CodexRuntime.create({bridgeInstanceId:"desktop-catalog",command:[process.execPath,fakeRuntime,"--desktop-source-catalog"]});
+ try{assert.equal((await runtime.listThreads()).data.length,0);const found=await runtime.findDelegationThreads("Desktop验收");assert.equal((found.data[0] as {id:string}).id,"desktop-fixture");const params=(found.fixture as {threadListParams:{sourceKinds:string[];searchTerm:string}}).threadListParams;assert(params.sourceKinds.includes("appServer"));assert.equal(params.searchTerm,"Desktop验收");}finally{runtime.close();}
+});
+
+test("tool configuration changes refresh an idle runtime even when the executable stays the same",async t=>{
+  const cwd=mkdtempSync(join(tmpdir(),"ilink-mcp-refresh-"));t.after(()=>rmSync(cwd,{recursive:true,force:true}));
+  let revision="old-native-pipe";
+  const count=join(cwd,"resumes");
+  const runtime=await CodexRuntime.create({bridgeInstanceId:"mcp-refresh",command:[process.execPath,fakeRuntime,"--count-method","thread/resume",count],configurationFingerprint:()=>revision});
+  try{
+    const before=await runtime.listThreads();await runtime.startThread(cwd);
+    revision="current-native-pipe";
+    await runtime.startTurn({threadId:"thread-new",text:"one task",clientUserMessageId:"msg"});
+    const after=await runtime.listThreads();
+    assert.notEqual((before.fixture as {pid:number}).pid,(after.fixture as {pid:number}).pid);
+    assert.equal(readFileSync(count,"utf8").trim().split(/\r?\n/u).length,1);
+  }finally{runtime.close();}
+});
+
+test("an idle runtime refreshes its installed command and resumes before a new turn",async t=>{
+  const cwd=mkdtempSync(join(tmpdir(),"ilink-runtime-update-"));t.after(()=>rmSync(cwd,{recursive:true,force:true}));
+  let command:[string,...string[]]=[process.execPath,fakeRuntime];
+  const runtime=await CodexRuntime.create({bridgeInstanceId:"runtime-update",command,commandResolver:()=>command});
+  try{
+    const before=await runtime.listThreads();
+    await runtime.startThread(cwd);
+    const count=join(cwd,"resume-count");
+    command=[process.execPath,fakeRuntime,"--count-method","thread/resume",count];
+    await runtime.startTurn({threadId:"thread-new",text:"only once",clientUserMessageId:"msg"});
+    const after=await runtime.listThreads();
+    assert.notEqual((before.fixture as {pid:number}).pid,(after.fixture as {pid:number}).pid);
+    assert.equal(readFileSync(count,"utf8").trim().split(/\r?\n/u).length,1);
+  }finally{runtime.close();}
+});
+
+for(const update of ["executable","configuration"]){
+test(`runtime updates never kill another channel's active turn (${update})`,async()=>{
+  let revision="old-config";
+  let command:[string,...string[]]=[process.execPath,resolve("tests/fixtures/fake-broken-history.mjs")];
+  const runtime=await CodexRuntime.create({bridgeInstanceId:"runtime-update-busy",command,commandResolver:()=>command,configurationFingerprint:()=>revision});
+  try{
+    await runtime.startTurn({threadId:"current",text:"active",clientUserMessageId:"first"});
+    if(update === "executable")command=[...command,"--updated"];else revision="new-config";
+    await assert.rejects(runtime.startTurn({threadId:"another",text:"new",clientUserMessageId:"second"}),/E_CODEX_RUNTIME_UPDATE_BUSY/);
+    assert.deepEqual((await runtime.listModels()).data,[]);
+  }finally{runtime.close();}
+});
+}
+
+test("background history hydration uses pages and cannot disconnect an unrelated active WeChat turn", async () => {
+  const runtime=await CodexRuntime.create({bridgeInstanceId:"history-protocol-test",command:[process.execPath,resolve("tests/fixtures/fake-broken-history.mjs"),"--two-pages"]});
+  const events: Array<{method:string;params:Record<string,unknown>}>=[];
+  runtime.onEvent(e=>events.push(e));
+  try {
+    await runtime.startTurn({threadId:"current",text:"汇报另一个会话的进度",clientUserMessageId:"message"});
+    const result=await runtime.readThread({threadId:"large",includeTurns:true});
+    assert.equal((result.thread.turns as unknown[]).length,2);
+    assert.equal((result.thread.turns as Array<{items:Array<{text:string}>}>)[1]!.items[0]!.text,'FULL_FINAL_原样保留'.repeat(1000));
+    assert.equal(events.some(e=>e.method==="error"),false);
+    assert.deepEqual((await runtime.listModels()).data,[]);
+  } finally {runtime.close();}
+});
+
 test("control intent classification uses an isolated ephemeral tool turn", async () => {
   const runtime = await CodexRuntime.create({
     bridgeInstanceId: "bridge-instance-control-router",
@@ -811,7 +875,8 @@ test("thread metadata operations use the stable public methods", async () => {
 
     assert.deepEqual(read.thread, {
       id: "thread-existing",
-      includeTurns: true,
+      includeTurns: false,
+      turns: [],
     });
     assert.deepEqual(unarchived.thread, { id: "thread-existing" });
     assert.deepEqual(named, { name: "来自微信的任务" });
@@ -857,7 +922,7 @@ test("existing threads inherit settings and new threads override only cwd", asyn
     assert.deepEqual(resumed.sandbox, { type: "workspaceWrite" });
     assert.deepEqual(
       Object.keys(resumed.fixtureParams as Record<string, unknown>).sort(),
-      ["developerInstructions", "threadId"],
+      ["developerInstructions", "excludeTurns", "threadId"],
     );
     assert.deepEqual(started.thread, {
       cwd: "D:\\Allowed Project",

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -17,6 +17,8 @@ import type { HistoryPort } from "../src/history/history-service.ts";
 
 function fixture(t: { after(fn: () => void): void },history?:HistoryPort) {
   const root = mkdtempSync(join(tmpdir(), "ilink-profile-bridge-")); const state = new SqliteState(join(root, "state.sqlite"));
+  const historyPath = join(root,"rollout.jsonl");
+  writeFileSync(historyPath,[{type:"response_item",payload:{type:"message",role:"user",content:[{type:"input_text",text:"HISTORY_USER"}]}},{type:"response_item",payload:{type:"message",role:"assistant",content:[{type:"output_text",text:"HISTORY_ANSWER"}]}},{type:"response_item",payload:{type:"custom_tool_call_output",output:"OTHER_SECRET"}}].map(r=>JSON.stringify(r)).join("\n")+"\n");
   const accounts = new AccountStore(root); accounts.register("primary", "user", "bot"); accounts.register("second", "other", "other-bot"); accounts.claimThread("primary", "legacy"); accounts.claimThread("second", "other-thread");
   const store = new ProfileStore(accounts.database, root); const listeners = new Set<(e: CodexEvent) => void>(); let next = 0; let failCreate = false; let failSend = false;
   const archives: string[] = [], reads: string[] = [], starts: string[] = []; const responses: Array<{ id: string | number; result: Record<string, unknown> }> = []; const sent: string[] = [];
@@ -31,7 +33,7 @@ function fixture(t: { after(fn: () => void): void },history?:HistoryPort) {
     async startTurn(input: { text: string; threadId: string }) { starts.push(input.text); return { turn: { id: `turn-${starts.length}` } }; },
     async archiveThread(id: string) { archives.push(id); return { thread: { id } }; },
     async listThreads() { return { data: [{ id: "legacy", name: "my-history" }, { id: "other-thread", name: "OTHER_SECRET" }], nextCursor: null }; },
-    async readThread({ threadId }: { threadId: string }) { reads.push(threadId); return { thread: { id: threadId, cwd: "D:\\Inbox", turns: [{ items: [{ type: "userMessage", content: [{ type: "text", text: "HISTORY_USER" }] }, { type: "agentMessage", text: "HISTORY_ANSWER" }] }] } }; },
+    async readThread({ threadId }: { threadId: string }) { reads.push(threadId); return { thread: { id: threadId, path:historyPath, cwd: "D:\\Inbox", turns: [{ items: [{ type: "userMessage", content: [{ type: "text", text: "HISTORY_USER" }] }, { type: "agentMessage", text: "HISTORY_ANSWER" }] }] } }; },
     respondToServerRequest(id: string | number, result: Record<string, unknown>) { responses.push({ id, result }); return true; },
     isServerRequestLive() { return true; },
     async updateThreadModelSettings(id: string) { return { thread: { id }, model: "model-a", reasoningEffort: "low" }; },
@@ -102,7 +104,7 @@ test("channel_history lists and reads only the authenticated channel, hides othe
   const f = fixture(t); const off=f.codex.onEvent(()=>{});
   const emit=(id:number,args:unknown)=>{for(const fn of f.listeners)fn({id,method:"item/tool/call",params:{threadId:"legacy",tool:"channel_history",arguments:args}})};
   emit(1,{}); emit(2,{threadId:"legacy"}); emit(3,{threadId:"other-thread"});
-  await new Promise(r=>setTimeout(r,20)); off();
+  const deadline=Date.now()+2000; while(f.responses.length<3&&Date.now()<deadline) await new Promise(r=>setTimeout(r,10)); off();
   assert.equal(f.responses.length,3); assert.ok(f.responses.some(r=>r.id===3&&r.result.success===false));
   assert.deepEqual(f.reads,["legacy"]); const output=JSON.stringify(f.responses); assert.match(output,/HISTORY_USER/); assert.match(output,/HISTORY_ANSWER/); assert.doesNotMatch(output,/OTHER_SECRET/);
 });
