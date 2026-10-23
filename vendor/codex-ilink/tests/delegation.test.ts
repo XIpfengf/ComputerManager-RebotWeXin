@@ -25,7 +25,7 @@ test("crash between sending checkpoint and acknowledgement cannot replay a task"
 test("completion requires exact job marker, then is delivered back to its account",async()=>{const f=fixture();try{await f.submit();await f.service.tick();const j=f.store.all()[0]!;f.complete(j,"Unrelated completed task");f.advance();await f.service.tick();assert.equal(f.store.all()[0]?.status,"running");f.complete(j);f.advance();await f.service.tick();assert.equal(f.store.all()[0]?.targetTurn,"target-turn");f.advance();await f.service.tick();assert.equal(f.store.all()[0]?.status,"delivered");assert.match(f.notices.at(-1)!,/RESULT_OK/);assert.equal(f.sent.length,1);}finally{f.db.close();}});
 test("delivery failure is retried without executing target again",async()=>{const f=fixture();try{let available=false;const service=new DelegationService({...f.options,notify:async()=>available});await f.submit();await service.tick();f.complete(f.store.all()[0]!);f.advance();await service.tick();f.advance();await service.tick();assert.equal(f.store.all()[0]?.status,"completed");available=true;f.advance();await service.tick();assert.equal(f.store.all()[0]?.status,"delivered");assert.equal(f.sent.length,1);}finally{f.db.close();}});
 test("secondary cannot access primary defaults or other channels; grants cannot steal explicit ownership",async()=>{const f=fixture();try{const s=new DelegationService({...f.options,account:"secondary"});assert.equal(s.allowed("target"),false);writeFileSync(join(f.options.root,"delegation-permissions.json"),JSON.stringify({version:1,accounts:{secondary:{allowDesktopThreads:["target","stolen"]}}}));assert.equal(s.allowed("target"),true);const strict=new DelegationService({...f.options,account:"secondary",explicitOwner:()=>"primary"});assert.equal(strict.allowed("target"),false);assert.equal(JSON.parse(await s.command(f.context,{action:"list"},f.source)).length,0);}finally{f.db.close();}});
-test("ambiguous names reject without creating jobs",async()=>{const f=fixture();try{const s=new DelegationService({...f.options,resolve:async()=>[{id:"a",title:"test"},{id:"b",title:"test"}]});await assert.rejects(s.command(f.context,{action:"submit",target:"验收会话",instruction:"测试"},f.source),/多个/);assert.equal(f.store.all().length,0);}finally{f.db.close();}});
+test("ambiguous names reject without creating jobs",async()=>{const f=fixture();try{const s=new DelegationService({...f.options,resolve:async()=>[{id:"a",title:"test"},{id:"b",title:"test"}]});const r=JSON.parse(await s.command(f.context,{action:"submit",target:"验收会话",instruction:"测试"},f.source));assert.equal(r.status,"needs_confirmation");assert.equal(r.candidates.length,2);assert.equal(f.store.all().length,0);}finally{f.db.close();}});
 test("cancelling queued work never stops a target; running cancellation is refused",async()=>{const f=fixture();try{await f.submit();const j=f.store.all()[0]!;await f.service.command(f.context,{action:"cancel",jobId:j.id},{...f.source,text:`取消委派 ${j.id}`});await f.service.tick();assert.equal(f.sent.length,0);assert.equal(f.store.all()[0]?.status,"cancelled");}finally{f.db.close();}});
 test("connection discovery works without inherited endpoint, rejects ambiguity, and rotates stale endpoint",()=>{const root=mkdtempSync(join(tmpdir(),"ilink-tools-"));mkdirSync(join(root,"plugins/cache/openai-bundled/codex-app-tools/0.1.6"),{recursive:true});const a="codex-app-tools-11111111-1111-1111-1111-111111111111",b="codex-app-tools-22222222-2222-2222-2222-222222222222";assert.match(discoverDesktopTools({CODEX_HOME:root},()=>[a]).endpoint,/111111/);assert.throws(()=>discoverDesktopTools({CODEX_HOME:root},()=>[a,b]),/AMBIGUOUS/);assert.match(discoverDesktopTools({CODEX_HOME:root,CODEX_APP_TOOLS_PIPE_PATH:`\\\\.\\pipe\\${a}`},()=>[b]).endpoint,/222222/);assert.throws(()=>discoverDesktopTools({CODEX_HOME:root},()=>[]),/UNAVAILABLE/);});
 
@@ -52,4 +52,47 @@ for(const [label,status,turns] of [
 
 test("unloaded target becoming busy at final probe is not sent",async()=>{
  const f=fixture();try{await f.submit();const original=f.options.tools();let reads=0;const service=new DelegationService({...f.options,tools:()=>({...original,call:async(c,t,a)=>t==="read_thread"?{thread:{status:{type:++reads===1?"notLoaded":"active"}},turns:[]}:original.call(c,t,a)})});await service.tick();assert.equal(f.sent.length,0);assert.equal(f.store.all()[0]?.status,"queued");}finally{f.db.close();}
+});
+
+test("pronoun follow-up delegates to the unique recent target in the same source chat",async()=>{
+ const f=fixture();try{await f.submit();const old=f.store.all()[0]!;old.status="delivered";f.store.save(old);
+ const result=JSON.parse(await f.service.command({...f.context,turnId:"follow-up"},{action:"submit",target:"验收会话",instruction:"检查后推送远端并返回结果"},{...f.source,text:"告诉它让它推送远端"}));
+ assert.equal(result.status,"queued");assert.equal(f.store.all().length,2);assert.equal(f.store.all()[1]?.target,old.target);await f.service.tick();assert.equal(f.sent.length,1);assert.match(String(f.sent[0]?.prompt),/告诉它让它推送远端/);
+ }finally{f.db.close();}
+});
+
+test("pronoun target argument is resolved from stored context, not searched as a title",async()=>{
+ const f=fixture();try{await f.submit();const service=new DelegationService({...f.options,resolve:async()=>{throw Error("Must not search a pronoun");}});const r=JSON.parse(await service.command({...f.context,turnId:"next"},{action:"submit",target:"它",instruction:"推送"},{...f.source,text:"告诉它推送"}));assert.equal(r.target,"验收会话");}finally{f.db.close();}
+});
+test("follow-up cannot borrow another channel or source chat, nor trust a model-suggested target",async()=>{
+ const f=fixture();try{await f.submit();for(const context of [{...f.context,threadId:"other",turnId:"next"}]){const r=JSON.parse(await f.service.command(context,{action:"submit",target:"验收会话",instruction:"推送"},{...f.source,text:"告诉它推送"}));assert.equal(r.status,"needs_confirmation");assert.equal(f.store.all().length,1);}const s=new DelegationService({...f.options,account:"secondary"});const r=JSON.parse(await s.command({...f.context,turnId:"next"},{action:"submit",target:"验收会话",instruction:"推送"},{...f.source,text:"告诉它推送"}));assert.equal(r.status,"needs_confirmation");}finally{f.db.close();}
+});
+test("ambiguous follow-up persists its task, confirms a named candidate and is idempotent",async()=>{
+ const f=fixture();try{await f.submit();const old=f.store.all()[0]!;f.store.save({...old,id:"other-job",turnId:"other-turn",target:"other-target",title:"另一个会话"});
+ const r=JSON.parse(await f.service.command({...f.context,turnId:"follow"},{action:"submit",target:"验收会话",instruction:"检查后推送"},{...f.source,text:"告诉它推送"}));assert.equal(r.status,"needs_confirmation");assert.match(r.question,/哪个会话/);assert.equal(f.store.all().length,2);
+ const service=new DelegationService(f.options);const context={...f.context,turnId:"confirm-turn"};const args={action:"confirm",instruction:"模型不应替换原任务"};const source={...f.source,text:"是验收会话"};
+ const yes=JSON.parse(await service.command(context,args,source));const again=JSON.parse(await service.command(context,args,source));assert.equal(yes.id,again.id);assert.equal(f.store.all().length,3);assert.equal(f.store.all()[2]?.instruction,"检查后推送");assert.match(f.store.all()[2]?.userText??"",/告诉它推送/);
+ await assert.rejects(service.command({...context,turnId:"later"},args,source),/没有有效/);
+ }finally{f.db.close();}
+});
+test("yes alone cannot choose between multiple candidates",async()=>{
+ const f=fixture();try{await f.submit();f.store.save({...f.store.all()[0]!,id:"other-job",turnId:"other-turn",target:"other-target",title:"另一个会话"});await f.service.command({...f.context,turnId:"follow"},{action:"submit",instruction:"推送"},{...f.source,text:"告诉它推送"});const r=JSON.parse(await f.service.command({...f.context,turnId:"confirm"},{action:"confirm",target:"验收会话"},{...f.source,text:"是"}));assert.equal(r.status,"needs_confirmation");assert.equal(f.store.all().length,2);}finally{f.db.close();}
+});
+test("no recent target keeps the task until the user supplies its name",async()=>{
+ const f=fixture();try{const r=JSON.parse(await f.service.command(f.context,{action:"submit",instruction:"推送远端"},{...f.source,text:"告诉它推送远端"}));assert.equal(r.status,"needs_confirmation");const yes=JSON.parse(await new DelegationService(f.options).command({...f.context,turnId:"confirm"},{action:"confirm",target:"验收会话"},{...f.source,text:"验收会话"}));assert.equal(yes.status,"queued");assert.equal(f.store.all()[0]?.instruction,"推送远端");}finally{f.db.close();}
+});
+test("expired, revoked and stale follow-up requests cannot create jobs",async()=>{
+ const f=fixture();try{await f.submit();const old=f.store.all()[0]!;f.store.save({...old,createdAt:-24*60*60_000});let r=JSON.parse(await f.service.command({...f.context,turnId:"next"},{action:"submit",instruction:"推送"},{...f.source,text:"告诉它推送"}));assert.equal(r.status,"needs_confirmation");
+ await assert.rejects(f.service.command({...f.context,turnId:"confirm"},{action:"confirm",target:"验收会话"},{...f.source,text:"验收会话",isLive:()=>false}),/失效/);assert.equal(f.store.all().length,1);
+ const s=new DelegationService({...f.options,now:()=>10000+11*60_000});await assert.rejects(s.command({...f.context,turnId:"confirm"},{action:"confirm",target:"验收会话"},{...f.source,text:"验收会话"}),/没有有效/);
+ const revoked=new DelegationService({...f.options,owner:()=>"secondary",explicitOwner:()=>"secondary"});r=JSON.parse(await revoked.command({...f.context,turnId:"revoked"},{action:"submit",instruction:"推送"},{...f.source,text:"告诉它推送"}));assert.equal(r.status,"needs_confirmation");assert.equal(f.store.all().length,1);
+ }finally{f.db.close();}
+});
+
+test("confirmation cannot turn a refusal or a changed task into authorization",async()=>{
+ const f=fixture();try{await f.service.command(f.context,{action:"submit",instruction:"推送"},{...f.source,text:"告诉它推送"});for(const text of ["不是验收会话","是验收会话，但不要推送","验收会话，换成删除文件"]){await assert.rejects(f.service.command({...f.context,turnId:"confirm"},{action:"confirm",target:"验收会话"},{...f.source,text}),/确认候选/);}assert.equal(f.store.all().length,0);}finally{f.db.close();}
+});
+
+test("pending follow-up survives SQLite close and reopen",async()=>{
+ const f=fixture();let db:DatabaseSync|undefined;try{await f.submit();const path=join(f.options.root,"followups.sqlite");db=new DatabaseSync(path);let store=new DelegationStore(db);const old=f.store.all()[0]!;store.save(old);store.save({...old,id:"other-job",turnId:"other-turn",target:"other-target",title:"另一个会话"});await new DelegationService({...f.options,store}).command({...f.context,turnId:"follow"},{action:"submit",instruction:"推送并返回结果"},{...f.source,text:"告诉它推送"});db.close();db=new DatabaseSync(path);store=new DelegationStore(db);await new DelegationService({...f.options,store}).command({...f.context,turnId:"confirm"},{action:"confirm"},{...f.source,text:"是验收会话"});assert.equal(store.all().at(-1)?.instruction,"推送并返回结果");assert.equal(store.all().length,3);}finally{db?.close();f.db.close();}
 });
