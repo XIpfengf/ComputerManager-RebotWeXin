@@ -156,3 +156,15 @@ test("Bridge persists the full reply and recovery never replays its first eight 
     assert.equal(delivered.length, parts.length);
   } finally { bridge.close(); leases.close(); state.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test("internal skill citations remain labels and never become implicit attachments",()=>{
+ const text='规则见 [Computer Use 技能](C:/Users/example/.codex/plugins/cache/computer-use/skills/computer-use/SKILL.md:12)。';
+ const r=extractWechatLocalFileReferences(text);assert.equal(r.references.length,0);assert.equal(r.text,'规则见 Computer Use 技能。');
+});
+
+test("internal instruction references do not emit attachment failure warnings or paths",()=>{
+ for(const path of ['C:/Users/example/.codex/skills/a/SKILL.md#L12','file:///C:/Users/example/.codex/plugins/a/docs/guidance.md','C:/project/AGENTS.md','C:/project/SKILL%2Emd']){
+  const r=prepareReplyFiles({text:`[技能引用](${path})`,workspaceRoot:'C:/workspace',exportRoot:'C:/exports'});assert.equal(r.text,'技能引用');assert.deepEqual(r.bodies,[]);
+ }
+ const ordinary=extractWechatLocalFileReferences('[项目说明](C:/project/README.md)');assert.equal(ordinary.references.length,1);
+});

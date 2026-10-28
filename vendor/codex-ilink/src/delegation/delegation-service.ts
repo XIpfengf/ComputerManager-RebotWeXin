@@ -5,7 +5,7 @@ import type {DatabaseSync} from "node:sqlite";
 import type {DelegationContext,DesktopTools} from "./desktop-tools.ts";
 export function initializeDelegationPermissions(root:string,accounts:readonly string[]):void {
  const path=join(root,"delegation-permissions.json");if(existsSync(path))return;
- try{writeFileSync(path,JSON.stringify({version:1,accounts:Object.fromEntries(accounts.map(name=>[name,{allowDesktopThreads:[]}]))},null,2),{flag:"wx",mode:0o600});}catch(error){if((error as NodeJS.ErrnoException).code!=="EEXIST")throw error;}
+ try{writeFileSync(path,JSON.stringify({version:1,accounts:Object.fromEntries(accounts.map(name=>[name,{allowDesktopThreads:[],allowDesktopReadThreads:[]}]))},null,2),{flag:"wx",mode:0o600});}catch(error){if((error as NodeJS.ErrnoException).code!=="EEXIST")throw error;}
 }
 
 export type DelegationJob=DelegationContext & {id:string;account:string;target:string;title:string;instruction:string;userText?:string;contextToken:string;status:"queued"|"sending"|"running"|"unknown"|"completed"|"delivered"|"cancelled";createdAt:number;targetTurn?:string;historyCursor?:string;result?:string;issue?:string};
@@ -23,7 +23,7 @@ export class DelegationStore {
   all(account?:string):DelegationJob[]{return (account?this.db.prepare("SELECT body FROM delegation_jobs WHERE account=? ORDER BY rowid").all(account):this.db.prepare("SELECT body FROM delegation_jobs ORDER BY rowid").all()).map(r=>JSON.parse(r.body as string));}
   save(j:DelegationJob):void{this.db.prepare("INSERT INTO delegation_jobs(id,account,origin_turn,target,status,body) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,body=excluded.body").run(j.id,j.account,j.turnId,j.target,j.status,JSON.stringify(j));}
 }
-export type DelegationOptions={account:string;store:DelegationStore;root:string;owner:(id:string)=>string;explicitOwner:(id:string)=>string|undefined;resolve:(selector:string)=>Promise<Array<{id:string;title:string}>>;readResult?:(target:string,turn:string)=>Promise<string>;tools:()=>DesktopTools;notify:(job:DelegationJob,text:string,key:string)=>Promise<boolean>;now?:()=>number};
+export type DelegationOptions={account:string;store:DelegationStore;root:string;owner:(id:string)=>string;explicitOwner:(id:string)=>string|undefined;resolve:(selector:string)=>Promise<Array<{id:string;title:string}>>;readInspection?:(target:string)=>Promise<Record<string,any>>;readResult?:(target:string,turn:string)=>Promise<string>;tools:()=>DesktopTools;notify:(job:DelegationJob,text:string,key:string)=>Promise<boolean>;now?:()=>number};
 // Desktop unloads inactive threads. Loading is not execution: require no live
 // or unrecognised turn state as well as a non-busy thread state before sending.
 function canReceiveDelegation(snapshot:Record<string,any>):boolean {
@@ -42,11 +42,29 @@ export class DelegationService {
     const file=join(o.root,"delegation-permissions.json");
     try{if(!existsSync(file))return false;const p=JSON.parse(readFileSync(file,"utf8"));return p.version===1&&Array.isArray(p.accounts?.[o.account]?.allowDesktopThreads)&&p.accounts[o.account].allowDesktopThreads.includes(id);}catch{return false;}
   }
+  canRead(id:string):boolean{
+    if(this.allowed(id))return true;
+    const o=this.options;if(o.explicitOwner(id)!==undefined)return false;
+    try{const p=JSON.parse(readFileSync(join(o.root,"delegation-permissions.json"),"utf8"));return p.version===1&&Array.isArray(p.accounts?.[o.account]?.allowDesktopReadThreads)&&p.accounts[o.account].allowDesktopReadThreads.includes(id);}catch{return false;}
+  }
   async command(context:DelegationContext,args:unknown,source:{text:string;contextToken:string;isLive?:()=>boolean}):Promise<string>{
     if(!args||typeof args!=="object"||Array.isArray(args))throw Error("参数无效");
     const p={...args} as Record<string,unknown>;
     if(Object.keys(p).some(k=>!["action","target","instruction","jobId"].includes(k)))throw Error("未知参数");
     const o=this.options;
+    if(p.action==="inspect"){
+      if(p.target!==undefined&&(typeof p.target!=="string"||p.target.length>200))throw Error("查询目标无效");
+      const live=()=>{if(source.isLive?.()===false)throw Error("会话查询请求已失效");};live();
+      if(typeof p.target==="string"&&/^[0-9a-f-]{36}$/iu.test(p.target)&&!this.canRead(p.target))return JSON.stringify({status:"permission_required",note:"当前微信未获该会话的查询权限；请询问用户是否为该目标授予只读访问。不得改走桌面界面、脚本或数据库绕过通道权限。"});
+      const candidates=(await o.resolve(typeof p.target==="string"?p.target:"")).filter(t=>this.canRead(t.id));live();
+      if(candidates.length!==1)return JSON.stringify({status:candidates.length?"needs_target":"permission_required",candidates,note:candidates.length?"请选择要查询的会话；只返回授权候选，不执行任务。":"当前通道没有可见的目标。历史缺失不代表任务停止；请直接询问目标名称或目标只读授权，不要退回 Computer Use 操作 Codex 界面。"});
+      const target=candidates[0]!;const tools=o.readInspection?undefined:o.tools();try{
+        if(!this.canRead(target.id))throw Error("目标授权已撤销");live();
+        const snapshot=o.readInspection?await o.readInspection(target.id):await tools!.call(context,"read_thread",{threadId:target.id,hostId:"local",turnLimit:1,includeOutputs:false,maxOutputCharsPerItem:2000});live();
+        if(!this.canRead(target.id))throw Error("目标授权已撤销");
+        return JSON.stringify({status:"observed",target,observedAt:new Date().toISOString(),threadStatus:snapshot.thread?.status,...(snapshot.history?{history:snapshot.history,statusSource:"independent-read-only-observer"}:{}),turns:(Array.isArray(snapshot.turns)?snapshot.turns:[]).slice(0,3).map((t:any)=>({id:t.id,status:t.status,messages:(Array.isArray(t.items)?t.items:[]).filter((i:any)=>i.type==="agentMessage"&&typeof i.text==="string").slice(-3).map((i:any)=>({text:i.text.slice(0,2000),phase:i.phase}))})),note:"只读查询，没有发送任务。状态是本次接口快照，文字为有界节选；旧进度、notLoaded或窗口存在不证明任务当前执行或停止。信息不足时说明证据时间，不改走 Codex 界面自动化。"});
+      }finally{tools?.close();}
+    }
     if(p.action==="list"||p.action==="status"||p.action==="cancel"){
       const jobs=o.store.all(o.account).filter(j=>!p.jobId||j.id===p.jobId);
       if(p.action==="cancel"){

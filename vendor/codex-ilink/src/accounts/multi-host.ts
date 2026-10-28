@@ -1,3 +1,4 @@
+import {recentHistory} from "./recent-history.ts";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -103,6 +104,7 @@ export async function runMultiAccountHost(options: RunWindowsHostOptions): Promi
         const profile = new ChannelProfileService({ store: profiles, account: name, runtime, projects: () => readDesktopProjects(desktopGlobalStatePath(environment)) });
         const delegation=new DelegationService({account:name,store:delegationStore,root:accounts.root,
           owner:id=>accounts.owner(id),explicitOwner:id=>accounts.explicitOwner(id),tools:()=>new OfficialDesktopTools(environment),
+          readInspection:async id=>{const {thread}=await observationRuntime.readThread({threadId:id,includeTurns:false});return {thread:{status:thread.status},history:await recentHistory(thread.path,"")};},
           readResult:async(id,turn)=>{let cursor:string|undefined;const seen=new Set<string>();for(let n=0;n<50;n++){const page=await observationRuntime.readRecentTurns(id,cursor);const found=(page.data as Array<Record<string,any>>).find(t=>t.id===turn);if(found)return found.items.filter((i:any)=>i.type==="agentMessage"&&i.phase==="final_answer").map((i:any)=>i.text).join("\n");if(typeof page.nextCursor!=="string"||seen.has(page.nextCursor))break;cursor=page.nextCursor;seen.add(cursor);}throw Error("E_DELEGATION_RESULT_NOT_FOUND");},
           resolve:async selector=>{
             if(/^[0-9a-f-]{36}$/iu.test(selector)){const {thread}=await observationRuntime.readThread({threadId:selector,includeTurns:false});return [{id:selector,title:String(thread.name??thread.preview??selector)}];}

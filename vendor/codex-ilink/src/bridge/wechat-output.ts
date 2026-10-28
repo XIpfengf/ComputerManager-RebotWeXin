@@ -24,7 +24,7 @@ export function extractWechatLocalFileReferences(text: string): {
       continue;
     }
     const reference = standaloneLocalFileReference(line);
-    if (reference) references.push(reference);
+    if (reference) { if (isInternalInstructionReference(reference.path)) remaining.push(reference.label); else references.push(reference); }
     else remaining.push(replaceInlineLocalLinks(line, references));
   }
   return {
@@ -190,7 +190,7 @@ function replaceInlineLocalLinks(line: string, references: WechatLocalFileRefere
         const path = raw.startsWith("<") && raw.endsWith(">") ? raw.slice(1, -1) : raw;
         if (end < line.length && isLocalFileTarget(path)) {
           const label = line.slice(start + 1, labelEnd).trim() || "附件";
-          references.push({ label, path });
+          if (!isInternalInstructionReference(path)) references.push({ label, path });
           result += label; offset = end + 1; continue;
         }
       }
@@ -198,4 +198,11 @@ function replaceInlineLocalLinks(line: string, references: WechatLocalFileRefere
     result += line[offset++];
   }
   return result;
+}
+
+/** Internal instruction citations are references, not implicit file deliveries. */
+function isInternalInstructionReference(target: string): boolean {
+  let path=target;try { path=decodeURIComponent(path); } catch { /* literal percent */ }
+  path=path.replace(/\\/gu,"/").replace(/[#:]\d.*$/u,"").replace(/#.*$/u,"");
+  return /(?:^|\/)(?:SKILL|AGENTS|CLAUDE)\.md$/iu.test(path)||/\/\.codex\/(?:plugins|skills|memories)\/.*\.md$/iu.test(path);
 }
