@@ -1,12 +1,12 @@
-# ComputerManager-RebotWeXin · V1.0.1
+# ComputerManager-RebotWeXin · V1.0.2
 
 通过普通微信与电脑管家对话：既能日常聊天、讨论知识和技术方案，也能让部署在本机的 Codex 查找文件、调用已授权软件与工具，并把结果发回微信。
 
-**当前发布版本为 V1.0.1。** 支持一个本机服务、多微信独立通道、人设与默认参数、持续会话和可选历史归档。版本值见 [VERSION](VERSION)，标签为 `v1.0.1`，功能与限制见 [发布说明](docs/releases/v1.0.1.md)。
+**当前发布版本为 V1.0.2。** 支持一个本机服务、多微信独立通道、人设与默认参数、持续会话和可选历史归档。版本值见 [VERSION](VERSION)，标签为 `v1.0.2`，功能与限制见 [发布说明](docs/releases/v1.0.2.md)。
 
 本项目基于 [Obito-404/Codex_iLink](https://github.com/Obito-404/Codex_iLink) 改造。架构为普通微信 ↔ 本机 Bridge ↔ Codex App Server，不是微信小程序，也不依赖模拟向 Desktop 输入框打字。各会话可在 Codex Desktop 查看历史。
 
-## V1.0.1有哪些功能
+## V1.0.2有哪些功能
 
 | 能力 | 当前行为 |
 | --- | --- |
@@ -62,7 +62,7 @@ setup 或上游启动注册可能覆盖兼容配置，因此最后用根脚本 `
 .\scripts\ilink.ps1 accounts add secondary
 ```
 
-`accounts add` 为新增微信提供独立扫码，不替换原绑定。主微信授权确实失效时才在停止 Bridge 后使用 `login --force`。启动、停止、更新与账号管理的完整说明见 [V1.0.1部署与命令手册](docs/user-guide.md)。
+`accounts add` 为新增微信提供独立扫码，不替换原绑定。主微信授权确实失效时才在停止 Bridge 后使用 `login --force`。启动、停止、更新与账号管理的完整说明见 [V1.0.2部署与命令手册](docs/user-guide.md)。
 
 电脑需开机、联网并保持该 Windows 用户会话；关机、注销或休眠期间无法正常处理新任务。不要移动运行中的仓库；移动目录或 Codex 路径改变后需重新注册启动任务。
 
@@ -90,7 +90,7 @@ setup 或上游启动注册可能覆盖兼容配置，因此最后用根脚本 `
 
 `clear` 不适合日常续聊，它会换成空白会话并归档旧会话；`new` 与 `clear` 在当前会话忙碌时会拒绝切换，需等待或显式 stop。微信 stop 只停止当前任务，PowerShell 的 stop 则停止整个中间件。
 
-全部配置字段、固定保留/恢复、确认码、工作目录和命令示例见 [V1.0.1部署与命令手册](docs/user-guide.md)。
+全部配置字段、固定保留/恢复、确认码、工作目录和命令示例见 [V1.0.2部署与命令手册](docs/user-guide.md)。
 
 ## 文件、权限与数据边界
 
@@ -103,15 +103,15 @@ setup 或上游启动注册可能覆盖兼容配置，因此最后用根脚本 `
 
 ## 验证状态与文档导航
 
-当前版本为 V1.0.1，包含桌面执行器与工具配置刷新、跨会话委派、指代接续及目标确认修复。2026-10-23 类型检查及 **614 项测试通过，0失败、0跳过**。用户已确认本轮微信功能验证通过；自动化、隔离实机和手机反馈的范围分别列于 [验收说明](docs/acceptance.md)。Windows 重启登录、长期调度及所有软件/网络边界不因该确认自动变成已验证。
+当前版本为 V1.0.2，包含桌面执行器与工具配置刷新、跨会话委派、指代接续及目标确认修复。2026-10-23 类型检查及 **614 项测试通过，0失败、0跳过**。用户已确认本轮微信功能验证通过；自动化、隔离实机和手机反馈的范围分别列于 [验收说明](docs/acceptance.md)。Windows 重启登录、长期调度及所有软件/网络边界不因该确认自动变成已验证。
 
 文档职责和同步顺序见 [文档职责](docs/documentation-map.md)。README 只保留概览和导航，完整命令以使用手册为准，功能契约见专题说明，当前验收状态统一在验收说明维护。
 
 | 文档 | 用途 |
 | --- | --- |
-| [V1.0.1部署与命令手册](docs/user-guide.md) | 部署后的使用入口与完整命令 |
-| [V1.0.1实现与验证](docs/channel-profile-implementation.md) | 配置、身份快照、实现边界 |
-| [V1.0.1需求计划](docs/channel-profile-requirements.md) | 原始需求与验收标准 |
+| [V1.0.2部署与命令手册](docs/user-guide.md) | 部署后的使用入口与完整命令 |
+| [V1.0.2实现与验证](docs/channel-profile-implementation.md) | 配置、身份快照、实现边界 |
+| [V1.0.2需求计划](docs/channel-profile-requirements.md) | 原始需求与验收标准 |
 | [持续会话与历史归档](docs/session-retention-plan.md) | 归档规则、命令与不删除边界 |
 | [多微信实现](docs/multi-wechat-implementation.md) | 账号路由、绑定及隔离 |
 | [回复交付](docs/reply-delivery-implementation.md) | 长回复与文件交付 |
@@ -120,7 +120,7 @@ setup 或上游启动注册可能覆盖兼容配置，因此最后用根脚本 `
 | [跨会话委派接口验证](docs/session-delegation-interface-validation.md) | 独立中间件向 Desktop 投递与回传的 P0 验证、正式接入门槛 |
 | [微信跨会话委派](docs/session-delegation.md) | 自然语言示例、授权配置、队列恢复与部署边界 |
 | [目录结构](docs/directory-layout.md) | 代码、私有配置与运行数据 |
-| [V1.0.1验收说明](docs/acceptance.md) | 验证结果和未覆盖范围 |
+| [V1.0.2验收说明](docs/acceptance.md) | 验证结果和未覆盖范围 |
 
 更新记录见 [CHANGELOG](CHANGELOG.md)，各专题职责见 [文档职责](docs/documentation-map.md)。
 
@@ -136,4 +136,4 @@ setup 或上游启动注册可能覆盖兼容配置，因此最后用根脚本 `
 
 上游原始 README 保留在 [vendor](vendor/codex-ilink/README.md)，差异沿革见 [上游基线](docs/upstream-baseline.md)。本项目独立维护，不代表上游作者、腾讯或 OpenAI 的官方产品。源码维护在远端 develop；私有运行数据不随代码推送。
 
-当前 develop 包含 V1.0.1 后续修复：授权 Desktop 只读进度查询、大型会话有界文字读取、查询错误分类，以及内部技能引用不再隐式发送附件。部署加载与未完成的微信验收见 [验收说明](docs/acceptance.md)，权限结构见 [委派说明](docs/session-delegation.md)；不修改既有发布标签。
+V1.0.2 包含以下修复：授权 Desktop 只读进度查询、大型会话有界文字读取、查询错误分类，以及内部技能引用不再隐式发送附件。部署加载与未完成的微信验收见 [验收说明](docs/acceptance.md)，权限结构见 [委派说明](docs/session-delegation.md)；不修改既有发布标签。
