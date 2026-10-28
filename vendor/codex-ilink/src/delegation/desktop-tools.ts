@@ -50,7 +50,7 @@ export class OfficialDesktopTools implements DesktopTools {
     if(!/^[0-9a-f-]{36}$/iu.test(context.threadId)||!/^[0-9a-f-]{36}$/iu.test(context.turnId))throw new Error("E_DELEGATION_ORIGIN_REQUIRED");
     await(this.#ready??=this.#connect());
     const result=await this.#request("tools/call",{name:tool,arguments:args,_meta:{"x-codex-turn-metadata":{thread_id:context.threadId,turn_id:context.turnId}}});
-    if(result.isError)throw new Error("E_DESKTOP_TOOL_FAILED");
+    if(result.isError){const text=result.content?.filter((x:any)=>x.type==="text").map((x:any)=>x.text).join(" ")??"";throw new Error(/(?:exceeds.*size limit|too large|oversized)/iu.test(text)?"E_DESKTOP_RESPONSE_TOO_LARGE":"E_DESKTOP_TOOL_FAILED");}
     const text=result.content?.find((x:any)=>x.type==="text")?.text;
     try{return JSON.parse(text);}catch{throw new Error("E_DESKTOP_RESULT_INVALID");}
   }

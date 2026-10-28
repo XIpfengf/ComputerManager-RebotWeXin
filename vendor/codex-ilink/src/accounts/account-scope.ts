@@ -138,5 +138,5 @@ async function channelHistory(runtime: CodexRuntime, accounts: AccountStore, acc
   const page = await runtime.listThreads({ archived: p.archived === true, ...(typeof p.cursor === "string" ? { cursor: p.cursor } : {}) });
   return JSON.stringify({ nextCursor: page.nextCursor, threads: page.data.filter(t => {
     const x = t as { id?: unknown }; return typeof x.id === "string" && accounts.owner(x.id) === account;
-  }).map(t => { const x = t as Record<string, unknown>; return { id: x.id, title: x.name ?? x.preview, updatedAt: x.updatedAt, status:x.status }; }).filter(t => !query || JSON.stringify(t).toLowerCase().includes(query)), note: "仅当前通道授权历史；可能有下一页，可传cursor继续，不能把首屏无匹配当作没有任务；可查询archived=true的归档会话。" });
+  }).map(t => { const x = t as Record<string, unknown>; return { id: x.id, title: x.name ?? x.preview, updatedAt: x.updatedAt, status:x.status }; }).filter(t => !query || JSON.stringify(t).toLowerCase().includes(query)), note: "仅当前通道授权历史，不是全电脑实时任务目录。查Desktop任务进度应调用delegate_task action=inspect；权限不足时直接询问授权，不回退到操作Codex界面。可能有下一页，可传cursor继续，不能把首屏无匹配当作没有任务；可查询archived=true的归档会话。" });
 }

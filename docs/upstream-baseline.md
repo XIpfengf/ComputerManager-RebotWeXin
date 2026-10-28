@@ -1,4 +1,4 @@
-# V1.0.1 上游来源与兼容说明
+# V1.0.2 上游来源与兼容说明
 
 记录日期：2026-10-17。
 
@@ -13,9 +13,9 @@
 
 本项目以 Codex_iLink 为中间件基础。普通微信通信依托其 iLink 实现，任务执行依托本机 Codex App Server，历史由 Codex 持久化。Codex_iLink 是第三方项目，腾讯维护的 [openclaw-weixin](https://github.com/Tencent/openclaw-weixin) 是微信渠道的官方实现参考，不能混为同一个项目。
 
-## V1.0.1范围
+## V1.0.2范围
 
-V1.0.1 基于固定上游协议与执行链路，加入多微信、人设配置、持续会话、完整交付和历史归档。上游包版本独立维护，原始许可证与来源不变。
+V1.0.2 基于固定上游协议与执行链路，加入多微信、人设配置、持续会话、完整交付和历史归档。上游包版本独立维护，原始许可证与来源不变。
 
 完整链路：普通微信消息 → 本机 Bridge → Codex 持久化会话 → 本机操作 → 文字或附件结果 → 普通微信。Desktop 侧栏应能发现会话并查看历史。
 
@@ -34,9 +34,9 @@ V1.0.1 基于固定上游协议与执行链路，加入多微信、人设配置�
 | `tests/codex-runtime.test.ts` | 恢复会话后规范 cwd 传递回归测试 |
 | `tests/fixtures/fake-codex-runtime.mjs` | 支持上述回归测试的测试进程参数 |
 
-上述 8 个文件是V1.0.1兼容补丁基线。当前工作版本另有本项目多微信扩展，涉及账号模块、SQLite 状态命名空间、宿主、CLI 和 Guard 脚本，不再声称 vendor 仅有这 8 处差异。实现与验证见 [多微信说明](multi-wechat-implementation.md)。根目录 README、NOTICE、启动脚本和项目文档属于本项目维护内容，上游原始 README 保留在 vendor 内。
+上述 8 个文件是V1.0.2兼容补丁基线。当前工作版本另有本项目多微信扩展，涉及账号模块、SQLite 状态命名空间、宿主、CLI 和 Guard 脚本，不再声称 vendor 仅有这 8 处差异。实现与验证见 [多微信说明](multi-wechat-implementation.md)。根目录 README、NOTICE、启动脚本和项目文档属于本项目维护内容，上游原始 README 保留在 vendor 内。
 
-后续本项目扩展还包括完整回复交付，以及V1.0.1通道身份配置、原生身份注入/恢复、模型默认值、历史工具和配置命令，分别见 [回复交付](reply-delivery-implementation.md) 与 [V1.0.1实现](channel-profile-implementation.md)。这些属于固定上游之上的项目改造，未声称来自原作者；上游许可和来源保留。
+后续本项目扩展还包括完整回复交付，以及V1.0.2通道身份配置、原生身份注入/恢复、模型默认值、历史工具和配置命令，分别见 [回复交付](reply-delivery-implementation.md) 与 [V1.0.2实现](channel-profile-implementation.md)。这些属于固定上游之上的项目改造，未声称来自原作者；上游许可和来源保留。
 
 ## 已有实机证据
 
