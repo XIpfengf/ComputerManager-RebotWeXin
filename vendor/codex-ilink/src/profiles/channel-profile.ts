@@ -20,10 +20,12 @@ export const CONFIG_HELP = ["config — 本通道配置（仅未来新会话生�
   'model / effort 只修改当前会话；config set model/effort 只修改以后新建会话。', '用 config set address "" 清空文本。身份力度 intensity=0–5，任务力度 task-persona=0–2；有效任务力度不超过身份力度。'].join("\n");
 /** Service is bound by the host to one authenticated account, never a user-supplied alias. */
 export class ChannelProfileService implements ProfilePort {
+  readonly compilerVersion: 1 | 2;
   readonly store: ProfileStore; readonly account: string; readonly runtime: CodexRuntime; readonly projects: () => Promise<readonly ProjectNavigationEntry[]> | readonly ProjectNavigationEntry[];
   #tail: Promise<unknown> = Promise.resolve();
   #reset: { code: string; revision: number; expires: number } | undefined;
-  constructor(options: { store: ProfileStore; account: string; runtime: CodexRuntime; projects: ChannelProfileService["projects"] }) {
+  constructor(options: { store: ProfileStore; account: string; runtime: CodexRuntime; projects: ChannelProfileService["projects"]; compilerVersion?: 1 | 2 }) {
+    this.compilerVersion = options.compilerVersion ?? 2;
     this.store = options.store; this.account = options.account; this.runtime = options.runtime; this.projects = options.projects;
   }
   serial<T>(fn: () => Promise<T>): Promise<T> { const work = this.#tail.then(fn); this.#tail = work.catch(() => {}); return work; }
@@ -97,11 +99,11 @@ export class ChannelProfileService implements ProfilePort {
         if (selection?.inboxDirectory) cwd = (await this.workspaceFor(p, selection.workspaceSelection ?? null)) ?? selection.inboxDirectory;
         resolved = await this.validateExecution(p, cwd);
       } catch (e) { throw new ProfileValidationError(`无法使用通道配置新建会话：${e instanceof Error ? e.message : "配置不可用"}`); }
-      const instructions = compilePersona(p);
+      const instructions = compilePersona(p, this.compilerVersion);
       const started = await create(cwd, permissions, { developerInstructions: instructions, model: resolved.model, effort: resolved.effort });
       try {
         if (started.model !== resolved.model || started.reasoningEffort !== resolved.effort) throw new Error("原生会话参数与请求不一致");
-        this.store.snapshot({ account: this.account, threadId: started.thread.id, profile: p, instructions, model: resolved.model, effort: resolved.effort, cwd: String(started.cwd ?? cwd) });
+        this.store.snapshot({ account: this.account, threadId: started.thread.id, profile: p, instructions, compilerVersion: this.compilerVersion, model: resolved.model, effort: resolved.effort, cwd: String(started.cwd ?? cwd) });
       } catch (e) { await this.runtime.archiveThread(started.thread.id).catch(() => {}); throw e; }
       return started;
     });

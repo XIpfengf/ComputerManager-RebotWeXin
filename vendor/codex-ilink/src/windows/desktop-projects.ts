@@ -37,10 +37,17 @@ export function readDesktopProjects(primaryPath: string): DesktopProject[] {
 export function parseDesktopProjects(value: unknown): DesktopProject[] {
   if (!isRecord(value)) throw invalidDesktopProjectState();
   const savedRoots = value["electron-saved-workspace-roots"];
-  if (!Array.isArray(savedRoots)) throw invalidDesktopProjectState();
+  // Desktop migrations remove the legacy roots key. Only ordered, registered
+  // local projects are authoritative then; scoped owner keys and stale records
+  // must not be combined into the active project set.
+  if (savedRoots !== undefined && !Array.isArray(savedRoots)) throw invalidDesktopProjectState();
+  if (savedRoots === undefined &&
+      (!isRecord(value["local-projects"]) || !Array.isArray(value["project-order"]))) {
+    throw invalidDesktopProjectState();
+  }
 
   const roots = new Map<string, string>();
-  for (const rawRoot of savedRoots) {
+  for (const rawRoot of savedRoots ?? []) {
     const cwd = normalizeProjectPath(rawRoot);
     if (!cwd) throw invalidDesktopProjectState();
     if (!roots.has(pathKey(cwd))) roots.set(pathKey(cwd), cwd);

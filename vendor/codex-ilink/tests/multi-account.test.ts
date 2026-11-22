@@ -14,6 +14,40 @@ import type { CodexRuntime } from "../src/codex/codex-runtime.ts";
 import type {DelegationService} from "../src/delegation/delegation-service.ts";
 import type { CodexEvent } from "../src/bridge/bridge.ts";
 import type { ILinkSession, WireWeixinMessage } from "../src/ilink/protocol.ts";
+import { BridgeEngine } from "../src/bridge/bridge.ts";
+import { ChannelMemory } from "../src/memory/channel-memory.ts";
+
+test("two authenticated Bridge channels keep explicit memories isolated with colliding message ids", async () => {
+  const f = fixture();
+  const turns: Array<Parameters<CodexRuntime["startTurn"]>[0]> = [];
+  const sent: string[][] = [[], []];
+  const runtime = { async ensureThread() {}, async startTurn(input: Parameters<CodexRuntime["startTurn"]>[0]) { turns.push(input); return { turn: { id: `turn-${turns.length}` } }; } } as unknown as CodexRuntime;
+  const bridges = ["primary", "secondary"].map((account, i) => new BridgeEngine({
+    memory: new ChannelMemory(f.accounts, account), bridgeInstanceId: "memory-test",
+    codex: accountCodex(runtime, f.accounts, account), state: i ? f.secondary : f.primary,
+    leases: i ? f.leasesB : f.leasesA, mainThreadId: i ? "thread-b" : "thread-a",
+    session: { botId: i ? "bot-b" : "bot-a", controllerUserId: i ? "user-b" : "user-a", botToken: "fake", baseUrl: "https://example.invalid" },
+    ilink: { async sendText(input) { sent[i]!.push(input.text); return { accepted: true, clientId: input.clientId }; } },
+    newId: () => crypto.randomUUID(), now: () => 1000,
+  }));
+  const ingest = (i: number, id: number, text: string, user = i ? "user-b" : "user-a") => bridges[i]!.ingestBatch({ cursor: `${id}`, messages: [{ message_id: id, from_user_id: user, context_token: `ctx-${id}`, item_list: [{ type: 1, text_item: { text } }] }] });
+  try {
+    await Promise.all(bridges.map((_, i) => ingest(i, 1, "memory enable")));
+    await Promise.all([ingest(0, 2, "memory remember 我喜欢米饭"), ingest(1, 2, "memory remember 我喜欢面条")]);
+    await ingest(0, 3, "memory remember 我喜欢恶意材料", "intruder");
+    await Promise.all(bridges.map((_, i) => ingest(i, 4, "memory show")));
+    assert.match(sent[0]!.at(-1)!, /米饭/); assert.doesNotMatch(sent[0]!.at(-1)!, /面条|恶意/);
+    assert.match(sent[1]!.at(-1)!, /面条/); assert.doesNotMatch(sent[1]!.at(-1)!, /米饭/);
+    await Promise.all(bridges.map((_, i) => ingest(i, 5, "吃什么")));
+    assert.match(JSON.stringify(turns.find(t => t.threadId === "thread-a")!.additionalContext), /米饭/);
+    assert.doesNotMatch(JSON.stringify(turns.find(t => t.threadId === "thread-a")!.additionalContext), /面条/);
+    assert.match(JSON.stringify(turns.find(t => t.threadId === "thread-b")!.additionalContext), /面条/);
+    assert.doesNotMatch(JSON.stringify(turns.find(t => t.threadId === "thread-b")!.additionalContext), /米饭/);
+    await Promise.all(bridges.map((_, i) => ingest(i, 6, "memory export")));
+    assert.match(sent[0]!.at(-1)!, /米饭/); assert.doesNotMatch(sent[0]!.at(-1)!, /面条/);
+    assert.match(sent[1]!.at(-1)!, /面条/); assert.doesNotMatch(sent[1]!.at(-1)!, /米饭/);
+  } finally { f.close(); }
+});
 
 test("delegation uses only the real active input after dispatch body is cleared",async()=>{
   const f=fixture();const listeners=new Set<(e:CodexEvent)=>void>();const responses:Array<Record<string,unknown>>=[];let sourceText="";

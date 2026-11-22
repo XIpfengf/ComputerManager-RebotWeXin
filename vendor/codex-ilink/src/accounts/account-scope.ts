@@ -8,6 +8,7 @@ import { recentHistory } from "./recent-history.ts";
 import type {DelegationService} from "../delegation/delegation-service.ts";
 import type {SqliteState} from "../bridge/sqlite-state.ts";
 import type {DelegationHandler} from "../delegation/ipc.ts";
+import type { MemoryPort } from "../memory/channel-memory.ts";
 
 /** All accounts arbitrate in the original Guard DB; reconciliation sees only its own threads. */
 export class AccountLeaseStore extends SqliteTurnLeaseStore {
@@ -27,13 +28,13 @@ export class AccountLeaseStore extends SqliteTurnLeaseStore {
   override releaseStoppedDesktop(input: Pick<MarkDesktopStopInput, "threadId" | "turnId">) { this.check(input.threadId); return super.releaseStoppedDesktop(input); }
 }
 
-const ID_ARGUMENT_METHODS = new Set(["resumeThread", "ensureThread", "archiveThread", "unarchiveThread", "compactThread", "updateThreadModelSettings", "readRecentTurns"]);
+const ID_ARGUMENT_METHODS = new Set(["resumeThread", "ensureThread", "archiveThread", "unarchiveThread", "compactThread", "updateThreadModelSettings", "readRecentTurns", "readLatestFullTurn"]);
 const OBJECT_ARGUMENT_METHODS = new Set(["readThread", "setThreadName", "startTurn", "interruptTurn"]);
 
 /** A facade, not a second App Server. Owns event delivery and approval tokens. */
-export function accountCodex(runtime: CodexRuntime, accounts: AccountStore, name: string, profile?: ChannelProfileService, delegation?:{service:DelegationService;state:SqliteState;register?:(handler:DelegationHandler)=>void}): CodexRuntime {
+export function accountCodex(runtime: CodexRuntime, accounts: AccountStore, name: string, profile?: ChannelProfileService, delegation?:{service:DelegationService;state:SqliteState;register?:(handler:DelegationHandler)=>void}, memory?: MemoryPort): CodexRuntime {
   const requestIds = new Set<number | string>();
-  const activeInputs=new Map<string,{text:string;turnId:string|undefined}>();
+  const activeInputs=new Map<string,{text:string;attachments:NonNullable<Parameters<CodexRuntime["startTurn"]>[0]["attachments"]>;turnId:string|undefined}>();
   const check = (id: unknown) => {
     if (typeof id !== "string" || accounts.owner(id) !== name) throw new Error("E_ACCOUNT_THREAD_OWNERSHIP");
   };
@@ -41,7 +42,7 @@ export function accountCodex(runtime: CodexRuntime, accounts: AccountStore, name
     check(context.threadId);if(!delegation)throw Error("委派服务不可用");
     const dispatch=delegation.state.getDispatchIntentByTurnId(context.turnId),source=activeInputs.get(context.threadId);
     if(!dispatch||dispatch.threadId!==context.threadId||dispatch.completedAtMs!==null||source?.turnId!==context.turnId)throw Error("委派必须来自当前微信任务");
-    return delegation.service.command(context,args,{text:source.text,contextToken:dispatch.contextToken,isLive:()=>activeInputs.get(context.threadId)===source&&delegation.state.getDispatchIntentByTurnId(context.turnId)?.completedAtMs===null});
+    return delegation.service.command(context,args,{text:source.text,attachments:source.attachments,contextToken:dispatch.contextToken,isLive:()=>activeInputs.get(context.threadId)===source&&delegation.state.getDispatchIntentByTurnId(context.turnId)?.completedAtMs===null});
   };
   delegation?.register?.(delegate);
   return new Proxy(runtime, {
@@ -50,6 +51,16 @@ export function accountCodex(runtime: CodexRuntime, accounts: AccountStore, name
       if (key === "onEvent") return (listener: (e: CodexEvent) => void) => target.onEvent(event => {
         const id = event.params.threadId;
         if (typeof id === "string" && accounts.owner(id) !== name) return;
+        if (memory && typeof id === "string") {
+          // Record reference metadata before tool interception. Never collect tool/assistant text.
+          try {
+            if (event.method === "item/tool/call" && typeof event.params.turnId === "string") memory.recordReference(id, event.params.turnId, String(event.id ?? "unknown"));
+            if (event.method === "turn/completed") {
+              const turn = event.params.turn as { id?: unknown } | undefined;
+              if (typeof turn?.id === "string") memory.recordAssistant(id, turn.id);
+            }
+          } catch { /* Provenance failure cannot interrupt execution or authorize collection. */ }
+        }
         if(typeof id==="string"&&event.method==="turn/completed"){const turn=event.params.turn as {id?:string}|undefined;if(activeInputs.get(id)?.turnId===turn?.id)activeInputs.delete(id);}
         if (event.id !== undefined) {
           if (typeof id !== "string") return;
@@ -76,7 +87,7 @@ export function accountCodex(runtime: CodexRuntime, accounts: AccountStore, name
       });
       if (key === "isServerRequestLive") return (id: number | string) => requestIds.has(id) && target.isServerRequestLive(id);
       if(key==="startTurn")return async(input:Parameters<CodexRuntime["startTurn"]>[0])=>{
-        check(input.threadId);const source={text:input.text,turnId:undefined as string|undefined};activeInputs.set(input.threadId,source);
+        check(input.threadId);const source={text:input.text,attachments:input.attachments??[],turnId:undefined as string|undefined};activeInputs.set(input.threadId,source);
         try{const result=await target.startTurn(input);source.turnId=result.turn.id;return result;}catch(error){if(activeInputs.get(input.threadId)===source)activeInputs.delete(input.threadId);throw error;}
       };
       if (key === "respondToServerRequest") return (id: number | string, result: Record<string, unknown>) => {

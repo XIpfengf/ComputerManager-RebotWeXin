@@ -68,8 +68,8 @@ export class ProfileStore {
       this.db.prepare("DELETE FROM profile_change_intents WHERE id=?").run(i.id); this.db.exec("COMMIT");
     } catch (e) { this.db.exec("ROLLBACK"); throw e; }
   }
-  snapshot(snapshot: Omit<ThreadProfile, "compilerVersion" | "instructionHash">): void {
-    const payload: ThreadProfile = { ...snapshot, compilerVersion: COMPILER_VERSION, instructionHash: hash(snapshot.instructions) };
+  snapshot(snapshot: Omit<ThreadProfile, "compilerVersion" | "instructionHash"> & { compilerVersion?: number }): void {
+    const payload: ThreadProfile = { ...snapshot, compilerVersion: snapshot.compilerVersion ?? COMPILER_VERSION, instructionHash: hash(snapshot.instructions) };
     this.db.prepare("INSERT INTO thread_profiles(thread_id,account,payload) VALUES(?,?,?)").run(snapshot.threadId, snapshot.account, JSON.stringify(payload));
   }
   thread(id: string, account?: string): ThreadProfile | null {

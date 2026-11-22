@@ -13,6 +13,30 @@ import {
 const fakeRuntime = resolve("tests/fixtures/fake-codex-runtime.mjs");
 const NON_TIMING_TEST_REQUEST_TIMEOUT_MS = 5_000;
 
+test("old WeChat turns receive live application capabilities without changing persona or promoting memory",async()=>{
+ const runtime=await CodexRuntime.create({bridgeInstanceId:"turn-capabilities",command:[process.execPath,fakeRuntime,"--delegation-capability-fixture","--memory-context"],delegationPipe:"synthetic-pipe"});
+ try{await runtime.resumeThread("old-wechat-thread");const context={"ilink.channel-memory":{kind:"untrusted" as const,value:"合成偏好：米饭"}};
+ for(const text of ["在FATE新建会话并执行已批准方案","就按上面的方案办"]){const r=await runtime.startTurn({threadId:"old-wechat-thread",clientUserMessageId:text,text,additionalContext:context});const p=r.fixtureParams as Record<string,any>;assert.equal(p.additionalContext["ilink.runtime-capabilities"].kind,"application");assert.match(p.additionalContext["ilink.runtime-capabilities"].value,/ALL_TOOLS/);assert.match(p.additionalContext["ilink.runtime-capabilities"].value,/creation_status/);assert.deepEqual(p.additionalContext["ilink.channel-memory"],context["ilink.channel-memory"]);assert.equal(p.input[0].text,text);assert.equal(Object.hasOwn(p,"developerInstructions"),false);}
+ assert.equal(Object.hasOwn(context,"ilink.runtime-capabilities"),false);
+ }finally{runtime.close();}
+});
+
+test("dynamic memory uses native untrusted additionalContext separately from user input and attachments", async () => {
+  const runtime = await CodexRuntime.create({ bridgeInstanceId: "memory-contract", command: [process.execPath, fakeRuntime, "--memory-context"] });
+  try {
+    const context = { "ilink.channel-memory": { kind: "untrusted" as const, value: "合成偏好：米饭" } };
+    const result = await runtime.startTurn({ threadId: "legacy", clientUserMessageId: "memory-msg", text: "原始用户消息", attachments: [{ kind: "image", name: "test.png", path: "D:\\Inbox\\test.png" }], additionalContext: context });
+    const params = result.fixtureParams as Record<string, unknown>;
+    assert.deepEqual(params.additionalContext, context);
+    const input = params.input as Array<Record<string, unknown>>;
+    assert.equal(input[0]!.text, "原始用户消息"); assert.equal(input.at(-1)!.type, "localImage");
+    assert.doesNotMatch(JSON.stringify(input), /合成偏好/);
+    assert.deepEqual(Object.keys(params).sort(), ["additionalContext", "clientUserMessageId", "input", "threadId"]);
+    const next = await runtime.startTurn({ threadId: "legacy", clientUserMessageId: "next", text: "下一轮", additionalContext: {} });
+    assert.deepEqual((next.fixtureParams as Record<string, unknown>).additionalContext, {});
+  } finally { runtime.close(); }
+});
+
 test("delegation name lookup includes Desktop appServer threads omitted by interactive defaults",async()=>{
  const runtime=await CodexRuntime.create({bridgeInstanceId:"desktop-catalog",command:[process.execPath,fakeRuntime,"--desktop-source-catalog"]});
  try{assert.equal((await runtime.listThreads()).data.length,0);const found=await runtime.findDelegationThreads("Desktop验收");assert.equal((found.data[0] as {id:string}).id,"desktop-fixture");const params=(found.fixture as {threadListParams:{sourceKinds:string[];searchTerm:string}}).threadListParams;assert(params.sourceKinds.includes("appServer"));assert.equal(params.searchTerm,"Desktop验收");}finally{runtime.close();}
@@ -1539,3 +1563,34 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
   assert.fail("timed out waiting for fixture output");
 }
+
+
+test("delegation project lookup narrows native enumeration before limiting and ordering candidates", async () => {
+  const runtime = await CodexRuntime.create({ bridgeInstanceId: "project-catalog", command: [process.execPath, fakeRuntime, "--desktop-source-catalog"] });
+  try {
+    const result = await runtime.findDelegationThreads("", undefined, "D:\\FixtureProject");
+    const params = (result.fixture as {threadListParams: Record<string, unknown>}).threadListParams;
+    assert.equal(params.cwd, "D:\\FixtureProject");
+    assert.equal(params.limit, 10);
+    assert.equal(params.sortKey, "updated_at");
+    assert.equal(Object.hasOwn(params, "searchTerm"), false);
+    assert.ok((params.sourceKinds as string[]).includes("appServer"));
+  } finally { runtime.close(); }
+});
+
+
+test("a stalled delegation catalog produces a bounded read timeout diagnosis", async () => {
+  const runtime = await CodexRuntime.create({ bridgeInstanceId: "catalog-timeout", command: [process.execPath, fakeRuntime, "--hang-method", "thread/list"], requestTimeoutMs: 2500 });
+  try { await assert.rejects(runtime.findDelegationThreads("fixture"), /^Error: E_CODEX_THREAD_LIST_TIMEOUT$/); }
+  finally { runtime.close(); }
+});
+
+
+test("resuming an old thread advertises the live MCP alias without replacing frozen dynamic tools",async()=>{
+ const runtime=await CodexRuntime.create({bridgeInstanceId:"refresh-live-schema",command:[process.execPath,fakeRuntime,"--delegation-capability-fixture","--memory-context"],delegationPipe:"synthetic-pipe"});
+ try{const r=await runtime.resumeThread("old-wechat-thread");const params=r.fixtureParams as Record<string,any>;assert.match(params.developerInstructions,/ilink_delegate_task/);assert.deepEqual(params.config["mcp_servers.ilink_delegation"].enabled_tools,["ilink_delegate_task"]);assert.equal(Object.hasOwn(params,"dynamicTools"),false);assert.equal(await runtime.delegationCapabilities("old-wechat-thread"),true);}finally{runtime.close();}
+});
+test("creation checks actual live inventory before asking the model to create",async()=>{
+ const runtime=await CodexRuntime.create({bridgeInstanceId:"legacy-schema-block",command:[process.execPath,fakeRuntime,"--delegation-capability-fixture","--legacy-only-delegation"],delegationPipe:"synthetic-pipe"});
+ try{await assert.rejects(runtime.startTurn({threadId:"old-wechat-thread",clientUserMessageId:"creation-request",text:"在项目新建会话，执行方案"}),/E_ILINK_CREATION_TOOL_NOT_LOADED/);}finally{runtime.close();}
+});

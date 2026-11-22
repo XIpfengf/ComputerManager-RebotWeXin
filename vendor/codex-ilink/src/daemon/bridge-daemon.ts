@@ -88,6 +88,7 @@ export type DaemonMediaPort = InboundMediaPort & {
 };
 
 export type BridgeDaemonOptions = {
+  memory?: BridgeEngineOptions["memory"];
   history?: BridgeEngineOptions["history"];
   profile?: BridgeEngineOptions["profile"];
   activeTaskCounter?: ActiveTaskCounterPort;
@@ -200,6 +201,7 @@ export class BridgeDaemon {
     }
 
     this.#bridge = new BridgeEngine({
+      ...(this.#options.memory ? { memory: this.#options.memory } : {}),
       ...(this.#options.history ? {history:this.#options.history} : {}),
       ...(this.#options.profile ? { profile: this.#options.profile } : {}),
       bridgeInstanceId: this.#options.bridgeInstanceId,
@@ -298,6 +300,7 @@ export class BridgeDaemon {
     }
     const pollNowMs = this.#options.now();
     await this.#options.history?.tick().catch(()=>console.error("[ilink] history scan failed; will retry on next scheduled scan"));
+    void this.#options.memory?.tick().catch(() => console.error("[ilink] memory extraction unavailable"));
     this.#maintainTransportState(pollNowMs);
     this.#options.state.pruneExpiredDesktopObservationTombstones(
       pollNowMs,

@@ -112,6 +112,14 @@ setup 或上游启动注册可能覆盖兼容配置，因此最后用根脚本 `
 | [V1.0.2部署与命令手册](docs/user-guide.md) | 部署后的使用入口与完整命令 |
 | [V1.0.2实现与验证](docs/channel-profile-implementation.md) | 配置、身份快照、实现边界 |
 | [V1.0.2需求计划](docs/channel-profile-requirements.md) | 原始需求与验收标准 |
+| [V2.0.0人格与记忆调研](docs/v2.0.0-persona-memory-research.md) | 开源候选与设计背景 |
+| [DSH记忆、回复与情绪面板调研](docs/v2.0.0-dsh-memory-reply-research.md) | 截图机制、固定源码核对与后续设计；不是新增功能已部署声明 |
+| [自然聊天与恋爱教练源码调研](docs/v2.0.0-human-chat-research.md) | HowToGetAlongWithGirls 的回应流程、可借鉴设计与多轮评估建议 |
+| [V2中文表达姿态设计](docs/v2.0.0-expression-design.md) | 已实现姿态、中文组织、讲解与执行区别及模型输出验证边界 |
+| [V2动态表达与本机控制页](docs/v2.0.0-interaction-guide.md) | 召回来源、场景表达、独立情绪、预览与控制命令 |
+| [V2.0.0正式规格](docs/v2.0.0-persona-memory-spec.md) | 已确认的通道记忆来源、人设兼容及行为验收契约 |
+| [V2分支使用与试点说明](docs/v2.0.0-persona-memory-guide.md) | 分支命令、已授权部署范围及验证边界 |
+| [验收说明](docs/acceptance.md) | 自动化、实际部署和微信验收的范围 |
 | [持续会话与历史归档](docs/session-retention-plan.md) | 归档规则、命令与不删除边界 |
 | [多微信实现](docs/multi-wechat-implementation.md) | 账号路由、绑定及隔离 |
 | [回复交付](docs/reply-delivery-implementation.md) | 长回复与文件交付 |

@@ -2126,6 +2126,100 @@ test("a long-running turn sends one durable progress notice without releasing it
   }
 });
 
+test("an overdue first response requests interruption once and reports the confirmed outcome", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "codex-ilink-first-response-"));
+  const databasePath = join(directory, "state.sqlite");
+  const state = new SqliteState(databasePath);
+  const leases = new SqliteTurnLeaseStore(databasePath);
+  const sent: SendInput[] = [];
+  const typing: string[] = [];
+  const interrupted: string[] = [];
+  state.bindController({ accountId: "bot-a", boundAtMs: 1, userId: "controller-a" });
+  const createAccepted = (threadId: string, turnId: string) => {
+    state.createDispatchIntent({
+      body: "locate a file", contextToken: "ctx-timeout", createdAtMs: 1,
+      dedupeKey: turnId, operationId: turnId, threadId,
+    });
+    state.markDispatchAccepted(turnId, turnId, 2);
+    leases.tryAcquire({
+      createdAtMs: 1, instanceId: "bridge-instance", operationId: turnId,
+      owner: "bridge", threadId, turnId,
+    });
+  };
+  createAccepted("thread-stalled", "turn-stalled");
+  createAccepted("thread-working", "turn-working");
+  createAccepted("thread-approval", "turn-approval");
+  createAccepted("thread-unverified", "turn-unverified");
+  let now = 3;
+  const bridge = new BridgeEngine({
+    bridgeInstanceId: "bridge-instance",
+    codex: {
+      async readThread({ threadId }) {
+        return {
+          thread: {
+            id: threadId,
+            status: { type: "active", activeFlags: threadId === "thread-approval" ? ["waitingOnApproval"] : [] },
+            turns: [{ id: threadId.replace("thread", "turn"), status: "inProgress" }],
+          },
+        };
+      },
+      async readLatestFullTurn(threadId) {
+        if (threadId === "thread-unverified") throw new Error("read unavailable");
+        return {
+          id: threadId.replace("thread", "turn"), status: "inProgress",
+          itemsView: "full", items: [{ type: "userMessage" }],
+        };
+      },
+      async interruptTurn({ turnId }) {
+        interrupted.push(turnId);
+        return {};
+      },
+      async startTurn() {
+        assert.fail("an overdue turn must not be replayed");
+      },
+    },
+    ilink: {
+      async sendText(input) {
+        sent.push(input);
+        return { accepted: true, clientId: input.clientId };
+      },
+      async sendTyping(input) { typing.push(input.status); return true; },
+    },
+    leases, mainThreadId: "thread-stalled", newId: () => "unused",
+    now: () => now, session, state,
+  });
+  try {
+    await bridge.recoverPendingWork();
+    await bridge.ingestCodexEvent({
+      method: "item/started",
+      params: { threadId: "thread-working", turnId: "turn-working", item: { type: "commandExecution" } },
+    });
+    now = 10 * 60 * 1000 + 2;
+    await bridge.reconcilePendingWork();
+    await bridge.reconcilePendingWork();
+    assert.deepEqual(interrupted, ["turn-stalled"]);
+    assert.deepEqual(typing, ["typing", "cancel"]);
+    assert.ok(sent.some(item => item.clientId === "codex-ilink:turn-stalled:overdue" && /已请求中断/.test(item.text)));
+    assert.ok(sent.some(item => item.clientId === "codex-ilink:turn-working:overdue" && /尚未收到最终结果/.test(item.text)));
+    assert.equal(leases.getLease("thread-stalled")?.turnId, "turn-stalled");
+    assert.equal(state.getDispatchIntent("turn-stalled")?.completedAtMs, null);
+    await bridge.ingestCodexEvent({
+      method: "turn/completed",
+      params: { threadId: "thread-stalled", turn: { id: "turn-stalled", status: "interrupted" } },
+    });
+    assert.match(sent.at(-1)!.text, /首响应超时.*已确认回合中断/);
+    assert.equal(leases.getLease("thread-stalled"), null);
+    assert.equal(leases.getLease("thread-working")?.turnId, "turn-working");
+    assert.equal(leases.getLease("thread-approval")?.turnId, "turn-approval");
+    assert.equal(leases.getLease("thread-unverified")?.turnId, "turn-unverified");
+  } finally {
+    bridge.close();
+    leases.close();
+    state.close();
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
 test("a terminal WeChat turn without an agent reply reports an explicit error", async () => {
   const directory = mkdtempSync(join(tmpdir(), "codex-ilink-empty-reply-"));
   const databasePath = join(directory, "state.sqlite");
@@ -3101,7 +3195,7 @@ test("active unknown turns retain their exact leases and consume the global thre
     assert.equal(state.countActiveDispatches(), 3);
     assert.equal(
       state.peekQueuedTurn("thread-four")?.body,
-      turnBody("fourth request"),
+      turnBody("fourth request", true),
     );
     assert.equal(leases.listLeases().length, 3);
   } finally {
@@ -4189,7 +4283,7 @@ test("Bridge starts at most three turns across different shared threads", async 
 
     assert.deepEqual(startedThreads, ["thread-1", "thread-2", "thread-3"]);
     assert.equal(state.countActiveDispatches(), 3);
-    assert.equal(state.peekQueuedTurn("thread-4")?.body, turnBody("request-4"));
+    assert.equal(state.peekQueuedTurn("thread-4")?.body, turnBody("request-4", true));
     bridge.beginShutdown();
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.deepEqual(typing, [
@@ -5887,6 +5981,6 @@ function applyStateMigrationsThrough(
   }
 }
 
-function turnBody(text: string): string {
-  return serializeDurableTurnInput({ attachments: [], text, version: 1 });
+function turnBody(text: string, original = false): string {
+  return serializeDurableTurnInput({ ...(original ? { sourceKind: "channel-original" as const } : {}), attachments: [], text, version: 1 });
 }

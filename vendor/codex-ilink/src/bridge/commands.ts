@@ -30,6 +30,7 @@ export type ControlSequenceIntent = {
 };
 
 export type InboundIntent =
+  | { kind: "memoryControl"; command: string }
   | AtomicControlIntent
   | ControlSequenceIntent
   | { kind: "message"; text: string }
@@ -38,6 +39,7 @@ export type InboundIntent =
 export type RoutedControlIntent = AtomicControlIntent | ControlSequenceIntent;
 
 export const COMMAND_HELP = [
+  "memory — 本通道显式长期记忆（memory help 查看；默认关闭）",
   "history — 历史归档策略与预览（history help 查看，不删除历史）",
   "config — 本通道身份与新会话默认设置（config help 查看）",
   "p — projects",
@@ -62,6 +64,7 @@ export const COMMAND_HELP = [
 export function parseInboundText(text: string): InboundIntent {
   const command = text.trim();
   const foldedCommand = command.toLowerCase();
+  if (/^memory(?:\s|$)/u.test(command)) return { kind: "memoryControl", command };
   if (/^config(?:\s|$)/u.test(command)) return { kind: "profileConfig", command };
   if (/^history(?:\s|$)/u.test(command)) return { kind: "historyControl", command };
 

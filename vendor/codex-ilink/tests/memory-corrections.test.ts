@@ -1,0 +1,81 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { AccountStore } from "../src/accounts/account-store.ts";
+import { ChannelMemory } from "../src/memory/channel-memory.ts";
+
+test("a revision-checked correction replaces the old fact while keeping evidence and excluding unrelated retrieval", async t => {
+  const root = mkdtempSync(join(tmpdir(), "ilink-correct-")); const accounts = new AccountStore(root);
+  t.after(() => { accounts.close(); rmSync(root, { recursive: true, force: true }); });
+  accounts.register("primary", "a", "bot-a"); accounts.register("second", "b", "bot-b");
+  accounts.claimThread("primary", "a1"); accounts.claimThread("primary", "a2"); accounts.claimThread("second", "b1");
+  const memory = new ChannelMemory(accounts, "primary");
+  const source = { threadId: "a1", messageId: "old", nowMs: 1, kind: "channel-original" as const };
+  await memory.command("memory enable", source); await memory.command("memory remember 我喜欢米饭", source);
+  const old = JSON.parse(await memory.command("memory show", source)).memories[0];
+  assert.match(await memory.command(`memory correct ${old.id} ${old.revision} 我不喜欢米饭`, { ...source, messageId: "correct", nowMs: 2 }), /已纠正/);
+  const visible = JSON.parse(await memory.command("memory show", source)).memories;
+  assert.equal(visible.length, 1); assert.equal(visible[0].content, "我不喜欢米饭");
+  assert.equal(visible[0].supersedes, old.id);
+  assert.equal(visible[0].validFromMs, 2);
+  assert.match(await memory.command(`memory source ${old.id}`, source), /superseded.*old|old.*superseded/s);
+  assert.match(await memory.command(`memory correct ${old.id} ${old.revision} 我喜欢面条`, { ...source, messageId: "stale" }), /修订|已取代/);
+  assert.match(JSON.stringify(memory.context("a2", "晚饭吃什么")), /不喜欢米饭/);
+  assert.deepEqual(memory.context("a2", "解释一下数据库事务"), {});
+  const b = new ChannelMemory(accounts, "second");
+  await b.command("memory enable", { ...source, threadId: "b1" });
+  assert.match(await b.command(`memory correct ${visible[0].id} 1 我喜欢面条`, { ...source, threadId: "b1", messageId: "forge" }), /不存在|归属/);
+});
+
+test("opposing evidence is visible as conflict, and a confirmed correction rebuilds the profile across reopen", async t => {
+  const root = mkdtempSync(join(tmpdir(), "ilink-conflict-")); let accounts = new AccountStore(root);
+  t.after(() => { accounts.close(); rmSync(root, { recursive: true, force: true }); });
+  accounts.register("primary", "a", "bot-a"); accounts.claimThread("primary", "a1");
+  let memory = new ChannelMemory(accounts, "primary");
+  const source = { threadId: "a1", messageId: "first", nowMs: 1, kind: "channel-original" as const };
+  await memory.command("memory enable", source); await memory.command("memory remember 我喜欢白米饭", source);
+  await memory.command("memory remember 我不喜欢米饭", { ...source, messageId: "opposite", nowMs: 2 });
+  const conflicted = JSON.parse(await memory.command("memory profile", source));
+  assert.equal(conflicted.facts.length, 0); assert.equal(conflicted.conflicts.length, 2);
+  const old = conflicted.conflicts[0];
+  await memory.command(`memory correct ${old.id} ${old.revision} 我喜欢米饭`, { ...source, messageId: "confirmed", nowMs: 3 });
+  accounts.close(); accounts = new AccountStore(root); memory = new ChannelMemory(accounts, "primary");
+  const rebuilt = JSON.parse(await memory.command("memory profile", source));
+  assert.equal(rebuilt.facts.length, 1); assert.equal(rebuilt.conflicts.length, 0);
+  assert.equal(rebuilt.facts[0].content, "我喜欢米饭"); assert.equal(rebuilt.facts[0].createdAtMs, 3);
+});
+
+test("an old extraction cannot overwrite a correction and later model disagreement stays a candidate", async t => {
+  const root = mkdtempSync(join(tmpdir(), "ilink-correction-race-")); const accounts = new AccountStore(root);
+  t.after(() => { accounts.close(); rmSync(root, { recursive: true, force: true }); });
+  accounts.register("primary", "a", "bot-a"); accounts.claimThread("primary", "a1"); accounts.claimThread("primary", "a2");
+  let finish: ((value: unknown) => void) | undefined;
+  let immediate = false;
+  const memory = new ChannelMemory(accounts, "primary", { extractor: { async extract(input) {
+    const result = { facts: [{ sourceId: input.evidence[0]!.id, subject: "user", category: "preference", content: input.evidence[0]!.text }] };
+    if (immediate) return result;
+    return new Promise(resolve => { finish = () => resolve(result); });
+  } } });
+  const source = { threadId: "a1", messageId: "old", nowMs: 1, kind: "channel-original" as const };
+  await memory.command("memory enable", source); await memory.command("memory remember 我喜欢简短回答", source);
+  await memory.command("memory auto enable", source);
+  memory.recordTurn({ ...source, threadId: "a2", messageId: "pending", text: "我偏好简洁回复" }, "t1");
+  const pending = memory.tick();
+  const old = JSON.parse(await memory.command("memory show", source)).memories[0];
+  await memory.command(`memory correct ${old.id} ${old.revision} 我希望详细回答`, { ...source, messageId: "corrected", nowMs: 2 });
+  finish!(null); await pending;
+  immediate = true;
+  memory.recordTurn({ ...source, threadId: "a2", messageId: "new-old-preference", text: "我偏好简洁回复" }, "t2");
+  await memory.tick();
+  memory.recordTurn({ ...source, threadId: "a2", messageId: "uncertain-paraphrase", nowMs: 3, text: "我希望每次回答尽量精简" }, "t3");
+  await memory.tick();
+  const profile = JSON.parse(await memory.command("memory profile", source));
+  assert.equal(profile.facts.length, 1); assert.equal(profile.facts[0].content, "我希望详细回答");
+  assert.equal(profile.conflicts.length, 0);
+  const candidates = JSON.parse(await memory.command("memory candidates", source)).memories;
+  assert.equal(candidates.length, 2); assert.ok(candidates.every((fact: { status: string }) => fact.status === "candidate"));
+  assert.match(JSON.stringify(memory.context("a2", "说话能展开讲吗")), /详细回答/);
+  assert.doesNotMatch(JSON.stringify(memory.context("a2", "说话能展开讲吗")), /我偏好简洁回复/);
+});
