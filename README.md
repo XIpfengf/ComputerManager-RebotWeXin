@@ -2,7 +2,7 @@
 
 通过普通微信与电脑管家对话：既能日常聊天、讨论知识和技术方案，也能让部署在本机的 Codex 查找文件、调用已授权软件与工具，并把结果发回微信。
 
-本分支的交付版本为 **v1.0.3**，已发布标签为 `v1.0.2`。支持一个本机服务、多微信独立通道、人设与默认参数、持续会话和可选历史归档。见 [VERSION](VERSION) 和 [v1.0.3 版本说明](docs/releases/v1.0.3.md)。
+项目版本为 **v1.0.3**，对应标签 `v1.0.3`。支持一个本机服务、多微信独立通道、人设与默认参数、持续会话和可选历史归档。见 [VERSION](VERSION) 和 [v1.0.3 版本说明](docs/releases/v1.0.3.md)。
 
 本项目基于 [Obito-404/Codex_iLink](https://github.com/Obito-404/Codex_iLink) 改造。架构为普通微信 ↔ 本机 Bridge ↔ Codex App Server，不是微信小程序，也不依赖模拟向 Desktop 输入框打字。各会话可在 Codex Desktop 查看历史。
 
