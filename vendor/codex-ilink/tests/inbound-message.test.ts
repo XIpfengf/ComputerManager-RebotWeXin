@@ -18,6 +18,7 @@ test("a direct controller text becomes a stable inbound message", () => {
     {
       contextToken: "ctx-1",
       kind: "text",
+      sourceKind: "channel-original",
       messageId: "42",
       receivedAtMs: 123,
       text: "继续",
@@ -40,6 +41,7 @@ test("a lossless unsigned 64-bit message id remains stable", () => {
     {
       contextToken: "ctx-64",
       kind: "text",
+      sourceKind: "channel-original",
       messageId: "9223372036854775807",
       receivedAtMs: 123,
       text: "/st",
@@ -120,6 +122,7 @@ test("a voice transcript becomes text without exposing the voice download", () =
     {
       contextToken: "ctx-voice",
       kind: "text",
+      sourceKind: "channel-original",
       messageId: "5",
       receivedAtMs: 456,
       text: "微信语音转写",
@@ -171,6 +174,7 @@ test("main media follows the official IMAGE over VIDEO over FILE over VOICE prio
     {
       contextToken: "ctx-mixed",
       kind: "text",
+      sourceKind: "mixed",
       mediaCandidates: [
         {
           aesKeyHex: "00112233445566778899aabbccddeeff",
@@ -213,6 +217,7 @@ test("official media priority skips main items without a CDN download reference"
     {
       contextToken: "ctx-downloadable-priority",
       kind: "text",
+      sourceKind: "mixed",
       mediaCandidates: [
         {
           displayName: "usable.pdf",
@@ -252,6 +257,7 @@ test("a media-only message is retained for later bounded download", () => {
     {
       contextToken: "ctx-image",
       kind: "text",
+      sourceKind: "mixed",
       mediaCandidates: [
         {
           displayName: "image.jpg",
@@ -352,6 +358,7 @@ test("quoted media is a fallback and a main media item takes precedence", () => 
     {
       contextToken: "ctx-reference",
       kind: "text",
+      sourceKind: "mixed",
       mediaCandidates: [
         {
           displayName: "image.jpg",
@@ -398,6 +405,7 @@ test("quoted media is selected only when the main message has no media", () => {
     {
       contextToken: "ctx-reference-fallback",
       kind: "text",
+      sourceKind: "mixed",
       mediaCandidates: [
         {
           displayName: "quoted.pdf",
@@ -447,6 +455,7 @@ test("a quoted voice transcript is preserved as text instead of becoming raw aud
     {
       contextToken: "ctx-reference-voice",
       kind: "text",
+      sourceKind: "mixed",
       messageId: "10",
       receivedAtMs: 0,
       text: "[引用语音转写]\n被引用语音的微信转写\n总结这段语音",

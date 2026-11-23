@@ -2,6 +2,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { prepareReplyFiles } from "./reply-files.ts";
 import { ProfileValidationError, type ProfilePort } from "../profiles/channel-profile.ts";
 import type { HistoryPort } from "../history/history-service.ts";
+import type { MemoryPort, MemoryContext, MemoryPolicySnapshot,MemorySource } from "../memory/channel-memory.ts";
+import type {TurnContext} from "../codex/protocol.ts";
+import { MEMORY_CONTEXT_KEY } from "../memory/channel-memory.ts";
 import type { ThreadIdentitySettings } from "../codex/codex-runtime.ts";
 import { win32 } from "node:path";
 
@@ -86,6 +89,7 @@ export type ILinkSender = OutboxILinkSender & {
 };
 
 export type BridgeEngineOptions = {
+  memory?: MemoryPort;
   history?: HistoryPort;
   profile?: ProfilePort;
   bridgeInstanceId?: string;
@@ -165,6 +169,7 @@ export type CodexTurnStarter = {
     includeTurns: boolean;
     threadId: string;
   }): Promise<{ thread: Record<string, unknown> }>;
+  readLatestFullTurn?(threadId: string): Promise<Record<string, unknown> | undefined>;
   isServerRequestLive?(id: number | string): boolean;
   interruptTurn?(input: {
     threadId: string;
@@ -192,6 +197,7 @@ export type CodexTurnStarter = {
   ): Promise<Record<string, unknown>>;
   unarchiveThread?(threadId: string): Promise<Record<string, unknown>>;
   startTurn(input: {
+    additionalContext?: TurnContext;
     attachments?: readonly DurableTurnAttachment[];
     clientUserMessageId: string;
     text: string;
@@ -227,6 +233,7 @@ const MAX_ACTIVE_BRIDGE_TURNS = 3;
 const MAX_REMEMBERED_CODEX_FAILURES = 256;
 const BATCH_APPROVAL_CONFIRMATION_MS = 2 * 60 * 1_000;
 const DEFAULT_SLOW_TURN_NOTICE_AFTER_MS = 2 * 60 * 1_000;
+const FIRST_RESPONSE_TIMEOUT_MS = 10 * 60 * 1_000;
 const TYPING_KEEPALIVE_INTERVAL_MS = 5_000;
 const CODEX_OUTCOME_UNKNOWN_TEXT =
   "E_CODEX_OUTCOME_UNKNOWN：提交结果未知，请在 Desktop 查看后决定是否重发。";
@@ -252,6 +259,7 @@ export class BridgeEngine {
     const parts=splitWechatText(text);for(let i=0;i<parts.length;i++)await this.#send(token,parts[i]!,`${id}:${i}`);return true;
   }
   readonly #profile: ProfilePort | undefined;
+  readonly #memory: MemoryPort | undefined;
   readonly #completingTurns = new Map<string, Promise<boolean>>();
   readonly #approvals: ApprovalCoordinator | undefined;
   readonly #ilink: ILinkSender;
@@ -272,6 +280,8 @@ export class BridgeEngine {
   readonly #state: SqliteState;
   readonly #turnFailures = new Map<string, CodexTurnFailure>();
   readonly #userStoppedTurns = new Set<string>();
+  readonly #progressedTurns = new Set<string>();
+  readonly #firstResponseTimeouts = new Set<string>();
   readonly #clearOperations = new Map<string, string>();
   readonly #compactOperations = new Map<
     string,
@@ -305,6 +315,7 @@ export class BridgeEngine {
   constructor(options: BridgeEngineOptions) {
     this.#history=options.history;
     this.#profile = options.profile;
+    this.#memory = options.memory;
     if (options.profile) options.state.enablePersistentSessionBinding();
     this.#bridgeInstanceId = options.bridgeInstanceId;
     this.#codex = options.codex;
@@ -466,6 +477,21 @@ export class BridgeEngine {
     const turn = objectField(event.params, "turn");
     const turnId = stringField(turn, "id") ?? stringField(event.params, "turnId");
     const threadId = stringField(event.params, "threadId");
+    if (threadId && turnId && (
+      (event.method.startsWith("item/") && stringField(objectField(event.params, "item"), "type") !== "userMessage") ||
+      event.method === "turn/plan/updated" || event.id !== undefined
+    )) {
+      const lease = this.#leases?.getLease(threadId);
+      if (lease?.owner === "bridge" && lease.instanceId === this.#bridgeInstanceId &&
+          (lease.turnId === null || lease.turnId === turnId) &&
+          this.#state.getDispatchIntent(lease.operationId)?.completedAtMs === null) {
+        this.#progressedTurns.add(turnFailureKey(threadId, turnId));
+        if (this.#progressedTurns.size > MAX_REMEMBERED_CODEX_FAILURES) {
+          const oldest = this.#progressedTurns.values().next().value;
+          if (oldest !== undefined) this.#progressedTurns.delete(oldest);
+        }
+      }
+    }
     if (event.method !== "turn/completed" || !turnId || !threadId) return this.#ingestCodexEvent(event);
     const key = JSON.stringify([threadId, turnId]);
     const current = this.#completingTurns.get(key);
@@ -575,6 +601,8 @@ export class BridgeEngine {
       await this.#cleanupMedia(dispatch.dedupeKey);
       this.#turnFailures.delete(turnFailureKey(threadId, turnId));
       this.#userStoppedTurns.delete(stoppedTurnKey);
+      this.#firstResponseTimeouts.delete(stoppedTurnKey);
+      this.#progressedTurns.delete(stoppedTurnKey);
       await this.#drainQueuedTurns();
       this.#finishTyping(turnId);
       return true;
@@ -620,14 +648,19 @@ export class BridgeEngine {
     const suppressInterruptedFinal =
       effectiveCompletionStatus === "interrupted" &&
       this.#userStoppedTurns.has(stoppedTurnKey);
-    const failureText = mustPersistFinal
-      ? formatCodexTurnFailure(
+    const firstResponseTimedOut = effectiveCompletionStatus === "interrupted" &&
+      this.#firstResponseTimeouts.has(stoppedTurnKey);
+    let failureText: string | null = null;
+    if (mustPersistFinal) {
+      failureText = firstResponseTimedOut
+        ? "本轮等待模型首响应超时，Codex 已确认回合中断。"
+        : formatCodexTurnFailure(
           effectiveCompletionStatus,
           completionError ??
             (persistedTurn ? objectField(persistedTurn, "error") : undefined),
           rememberedFailure,
-        )
-      : null;
+        );
+    }
     const contextToken =
       existingFinalOutbox[0]?.contextToken ||
       dispatch.contextToken ||
@@ -696,6 +729,8 @@ export class BridgeEngine {
     await this.#cleanupMedia(dispatch.dedupeKey);
     this.#turnFailures.delete(turnFailureKey(threadId, turnId));
     this.#userStoppedTurns.delete(stoppedTurnKey);
+    this.#firstResponseTimeouts.delete(stoppedTurnKey);
+    this.#progressedTurns.delete(stoppedTurnKey);
     try {
       await this.#sendFinalOutbox(finalOutbox);
     } finally {
@@ -1061,6 +1096,8 @@ export class BridgeEngine {
     const intent = parseInboundText(message.text);
     if (intent.kind !== "message") {
       const turnInput: DurableTurnInput = {
+        ...this.#captureMemoryPolicy(),
+        sourceKind: message.sourceKind,
         ...(message.configurationBlocked ? { configurationBlocked: true as const } : {}),
         attachments: [],
         text: message.text,
@@ -1110,6 +1147,8 @@ export class BridgeEngine {
     }
 
     const turnInput: DurableTurnInput = {
+      ...this.#captureMemoryPolicy(),
+      sourceKind: message.sourceKind,
       attachments,
       ...(message.configurationBlocked ? { configurationBlocked: true as const } : {}),
       text: message.text,
@@ -1133,7 +1172,7 @@ export class BridgeEngine {
   }): Promise<number> {
     await this.#notifyExpiredBinding();
     let intent = parseInboundText(input.turnInput.text);
-    if ((intent.kind === "profileConfig" || intent.kind === "historyControl") && (input.turnInput.configurationBlocked || input.turnInput.attachments.length > 0)) {
+    if ((intent.kind === "profileConfig" || intent.kind === "historyControl" || intent.kind === "memoryControl") && (input.turnInput.configurationBlocked || input.turnInput.attachments.length > 0)) {
       intent = { kind: "message", text: `以下为语音/附件资料，不能作为永久配置命令：\n${input.turnInput.text}` };
     }
     if (
@@ -1177,6 +1216,16 @@ export class BridgeEngine {
         input.messageId,
         `未知命令。\n${COMMAND_HELP}`,
       );
+    }
+    if (intent.kind === "memoryControl") {
+      let reply = "当前服务未启用记忆管理。";
+      try {
+        if (this.#memory && intent.command === "memory private" && this.#memory.snapshot().unavailable) reply = "记忆服务不可用，未创建临时会话。";
+        else if (this.#memory) reply = intent.command === "memory private"
+          ? `${await this.#newSessionReply(true)}\n当前是无记忆临时会话，不读取、不写入记忆，历史永久排除回填。`
+          : await this.#memory.command(intent.command, { threadId: this.#currentThreadId() ?? "", messageId: input.messageId, nowMs: this.#now(), kind: input.turnInput.sourceKind ?? "unknown", ...(input.turnInput.memoryPolicy ? { policy: input.turnInput.memoryPolicy } : {}) });
+      } catch (error) { reply = error instanceof ControlCommandRejected ? error.reply : "记忆服务不可用，未确认保存。普通消息和任务仍可继续。"; }
+      return this.#replyToCommand(input.contextToken, input.messageId, reply);
     }
     if (intent.kind === "message") {
       return this.#dispatchTurn({
@@ -1796,16 +1845,18 @@ export class BridgeEngine {
     ].join("\n");
   }
 
-  async #newSessionReply(): Promise<string> {
+  async #newSessionReply(memoryPrivate = false): Promise<string> {
     if (this.#profile && this.#threadHasPendingWork(this.#currentThreadId())) throw new ControlCommandRejected("当前会话仍有任务执行或排队，请等待完成或先 stop。");
     return this.#startSessionReply(
       this.#state.getBridgeSettings().selectedProjectPath,
+      "new", memoryPrivate,
     );
   }
 
   async #startSessionReply(
     projectPath: string | null,
     mode: "clear" | "new" = "new",
+    memoryPrivate = false,
   ): Promise<string> {
     if (!this.#codex?.startThread || !this.#inboxDirectory) {
       throw new Error("new session is not configured");
@@ -1819,6 +1870,10 @@ export class BridgeEngine {
     if (this.#profile && typeof started.cwd === "string") projectPath = sameWindowsPath(started.cwd, this.#inboxDirectory) ? null : started.cwd;
     const threadId = stringField(started.thread, "id");
     if (!threadId) throw new Error("Codex did not return a thread id");
+    if (memoryPrivate) {
+      if (!this.#memory) throw new Error("E_MEMORY_UNAVAILABLE");
+      this.#memory.makePrivate(threadId);
+    }
     const nowMs = this.#now();
     this.#state.setBindingForNavigation({
       expiresAtMs: nowMs + this.#bindingIdleTimeoutMs(),
@@ -2681,6 +2736,7 @@ export class BridgeEngine {
     let started: { turn: { id: string } };
     try {
       started = await this.#codex.startTurn({
+        ...this.#memoryContext(route.threadId, input.turnInput.text, input.turnInput.memoryPolicy,{messageId:input.messageId,nowMs:this.#now(),kind:input.turnInput.sourceKind??"unknown"}),
         ...(input.turnInput.attachments.length > 0
           ? { attachments: input.turnInput.attachments }
           : {}),
@@ -2735,6 +2791,7 @@ export class BridgeEngine {
       return 1;
     }
     this.#state.markDispatchAccepted(operationId, started.turn.id, this.#now());
+    try { this.#memory?.recordTurn({ threadId: route.threadId, messageId: input.messageId, nowMs: this.#now(), kind: input.turnInput.sourceKind ?? "unknown", text: input.turnInput.text, policy: input.turnInput.memoryPolicy ?? { enabled: false, autoEnabled: false, revision: 0 } }, started.turn.id); } catch { /* No evidence means no collection. */ }
     this.#beginTyping(started.turn.id, input.contextToken);
     return 0;
   }
@@ -2821,7 +2878,7 @@ export class BridgeEngine {
         if (dispatch.turnId === null || dispatch.turnId !== lease.turnId) continue;
         const turn = findThreadTurn(thread, dispatch.turnId);
         if (!turn || !isTerminalTurnStatus(turn.status)) {
-          await this.#notifySlowDispatch(dispatch);
+          await this.#notifySlowDispatch(dispatch, thread, lease);
           continue;
         }
         if (dispatch.completedAtMs !== null && !this.#leases.release(lease)) {
@@ -3082,6 +3139,7 @@ export class BridgeEngine {
         let started: { turn: { id: string } };
         try {
           started = await this.#codex.startTurn({
+            ...this.#memoryContext(dispatch.threadId, dispatchInput.text, dispatchInput.memoryPolicy,{messageId:dispatch.dedupeKey.slice(`${this.#session.botId}/${this.#session.controllerUserId}/`.length),nowMs:this.#now(),kind:dispatchInput.sourceKind??"unknown"}),
             ...(dispatchInput.attachments.length > 0
               ? { attachments: dispatchInput.attachments }
               : {}),
@@ -3089,6 +3147,7 @@ export class BridgeEngine {
             text: dispatchInput.text,
             threadId: dispatch.threadId,
           });
+          try { this.#memory?.recordTurn({ threadId: dispatch.threadId, messageId: dispatch.dedupeKey.slice(`${this.#session.botId}/${this.#session.controllerUserId}/`.length), nowMs: this.#now(), kind: dispatchInput.sourceKind ?? "unknown", text: dispatchInput.text, policy: dispatchInput.memoryPolicy ?? { enabled: false, autoEnabled: false, revision: 0 } }, started.turn.id); } catch { /* No evidence means no collection. */ }
         } catch (error) {
           if (!(error instanceof CodexOutcomeUnknownError)) {
             await this.#completeRejectedDispatch({
@@ -3180,7 +3239,8 @@ export class BridgeEngine {
         dispatch.status === "accepted" &&
         dispatch.completedAtMs === null &&
         dispatch.turnId &&
-        dispatch.contextToken
+        dispatch.contextToken &&
+        this.#now() - dispatch.updatedAtMs < FIRST_RESPONSE_TIMEOUT_MS
       ) {
         this.#beginTyping(dispatch.turnId, dispatch.contextToken);
       }
@@ -3191,6 +3251,24 @@ export class BridgeEngine {
     if (this.#typingKeepalive === undefined) return;
     clearInterval(this.#typingKeepalive);
     this.#typingKeepalive = undefined;
+  }
+
+  #captureMemoryPolicy(): { memoryPolicy?: MemoryPolicySnapshot } {
+    if (!this.#memory) return {};
+    try { return { memoryPolicy: this.#memory.snapshot() }; }
+    catch { return { memoryPolicy: { enabled: false, autoEnabled: false, revision: 0, unavailable: true } }; }
+  }
+
+  #memoryContext(threadId: string, query: string, policy?: MemoryPolicySnapshot,source?:Pick<MemorySource,"messageId"|"nowMs"|"kind">): { additionalContext?: TurnContext } {
+    if (!this.#memory) return {};
+    const unavailable = (): { additionalContext: MemoryContext } => ({ additionalContext: { [MEMORY_CONTEXT_KEY]: { kind: "untrusted", value: JSON.stringify({ status: "unavailable", memories: [], note: "本轮记忆读取失败，不能据此声称记得或不存在相关记忆。" }) } } });
+    if (policy?.unavailable) return unavailable();
+    if(this.#memory.prepareContext&&source){try{return {additionalContext:this.#memory.prepareContext({...source,threadId,text:query,...(policy?{policy}:{})})};}catch{return unavailable();}}
+    if (!policy?.enabled) return { additionalContext: {} };
+    try { return { additionalContext: this.#memory.context(threadId, query) }; }
+    catch {
+      return unavailable();
+    }
   }
 
   #queueTyping(status: "cancel" | "typing"): void {
@@ -3240,14 +3318,17 @@ export class BridgeEngine {
     }
   }
 
-  async #notifySlowDispatch(dispatch: DispatchIntent): Promise<void> {
+  async #notifySlowDispatch(
+    dispatch: DispatchIntent,
+    thread?: Record<string, unknown>,
+    lease?: TurnLease,
+  ): Promise<void> {
     const current = this.#state.getDispatchIntent(dispatch.operationId);
     if (
       current?.status !== "accepted" ||
       current.completedAtMs !== null ||
       current.turnId === null ||
-      current.turnId !== dispatch.turnId ||
-      this.#now() - current.updatedAtMs < this.#slowTurnNoticeAfterMs
+      current.turnId !== dispatch.turnId
     ) {
       return;
     }
@@ -3255,6 +3336,24 @@ export class BridgeEngine {
       current.contextToken ||
       this.#state.getILinkState(this.#session.botId)?.contextToken;
     if (!contextToken) return;
+    const elapsed = this.#now() - current.updatedAtMs;
+    if (elapsed >= FIRST_RESPONSE_TIMEOUT_MS) {
+      const clientId = `codex-ilink:${current.turnId}:overdue`;
+      this.#finishTyping(current.turnId);
+      if (this.#state.getOutbox(clientId)) return;
+      const requested = await this.#interruptMissingFirstResponse(current, current.turnId, thread, lease);
+      if (this.#state.getDispatchIntent(current.operationId)?.completedAtMs !== null) return;
+      const text = requested
+        ? "模型首响应等待已达 10 分钟，已请求中断本轮，正在等待 Codex 确认。"
+        : "本轮已等待至少 10 分钟，尚未收到最终结果。可发送 st 查看状态，或 stop 请求停止。";
+      try {
+        await this.#send(contextToken, text, clientId);
+      } catch {
+        // The outbox owns delivery retries.
+      }
+      return;
+    }
+    if (elapsed < this.#slowTurnNoticeAfterMs) return;
     try {
       await this.#send(
         contextToken,
@@ -3263,6 +3362,47 @@ export class BridgeEngine {
       );
     } catch {
       // The durable outbox retries the same one-time progress notice.
+    }
+  }
+
+  async #interruptMissingFirstResponse(
+    dispatch: DispatchIntent,
+    turnId: string,
+    thread: Record<string, unknown> | undefined,
+    lease: TurnLease | undefined,
+  ): Promise<boolean> {
+    const codex = this.#codex;
+    const status = asObject(thread?.status);
+    if (!codex?.readLatestFullTurn || !codex.interruptTurn || !this.#leases ||
+        !lease || lease.instanceId !== this.#bridgeInstanceId ||
+        status?.type !== "active" || !Array.isArray(status.activeFlags) || status.activeFlags.length > 0) {
+      return false;
+    }
+    const key = turnFailureKey(dispatch.threadId, turnId);
+    const canInterrupt = () =>
+      !this.#closing &&
+      !this.#progressedTurns.has(key) &&
+      !this.#firstResponseTimeouts.has(key) &&
+      !this.#userStoppedTurns.has(key) &&
+      !this.#completingTurns.has(key) &&
+      !this.hasPendingApproval(dispatch.threadId) &&
+      this.#state.getDispatchIntent(dispatch.operationId)?.completedAtMs === null &&
+      this.#leases?.isHeldBy(lease);
+    if (!canInterrupt()) return false;
+    try {
+      const turn = await codex.readLatestFullTurn(dispatch.threadId);
+      if (turn?.id !== turnId || turn.status !== "inProgress" || turn.itemsView !== "full" ||
+          !Array.isArray(turn.items) || turn.items.length === 0 ||
+          turn.items.some(item => asObject(item)?.type !== "userMessage") ||
+          !canInterrupt()) {
+        return false;
+      }
+      this.#firstResponseTimeouts.add(key);
+      await codex.interruptTurn({ threadId: dispatch.threadId, turnId });
+      return true;
+    } catch {
+      this.#firstResponseTimeouts.delete(key);
+      return false;
     }
   }
 

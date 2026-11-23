@@ -257,6 +257,10 @@ lines.on("line", (line) => {
     return;
   }
 
+  if(process.argv.includes("--delegation-capability-fixture")){
+    if(message.method==="thread/resume"){respond(message.id,{thread:{id:message.params.threadId},cwd:process.cwd(),fixtureParams:message.params});return;}
+    if(message.method==="mcpServerStatus/list"){respond(message.id,{data:[{name:"ilink_delegation",tools:process.argv.includes("--legacy-only-delegation")?{delegate_task:{name:"delegate_task",inputSchema:{properties:{action:{enum:["inspect","submit"]}}}}}:{ilink_delegate_task:{name:"ilink_delegate_task",inputSchema:{properties:{action:{enum:["create","retry","creation_status"]}}}}}}],nextCursor:null});return;}
+  }
   if (message.method === "thread/resume") {
     if (
       !hasExactKeys(message.params, ["developerInstructions", "excludeTurns", "threadId"]) || message.params.excludeTurns !== true
@@ -382,6 +386,7 @@ lines.on("line", (line) => {
     if (
       !hasExactKeys(message.params, [
         "clientUserMessageId",
+        ...(process.argv.includes("--memory-context") ? ["additionalContext"] : []),
         ...(process.argv.includes("--resume-cwd") ? ["cwd"] : []),
         "input",
         "threadId",

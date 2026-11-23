@@ -479,7 +479,7 @@ test("a spooled Desktop prompt is observed before the same iLink batch enters it
     assert.equal(starts, 0, "WeChat must not start beside the Desktop turn");
     assert.equal(state.countQueuedTurns(), 1);
     const queued = state.peekQueuedTurn(targetThreadId);
-    assert.equal(queued?.body, turnBody("must wait for Desktop"));
+    assert.equal(queued?.body, turnBody("must wait for Desktop", true));
     assert.equal(queued?.threadId, targetThreadId);
     assert.equal(state.countActiveDispatches(), 0);
     assert.equal(leases.getLease(targetThreadId), null);
@@ -700,7 +700,7 @@ test("a prompt spooled after the poll snapshot is drained between s<n> and body"
     assert.equal(starts, 0);
     assert.equal(
       state.peekQueuedTurn(targetThreadId)?.body,
-      turnBody("wait behind Desktop"),
+      turnBody("wait behind Desktop", true),
     );
   } finally {
     await daemon.stop().catch(() => undefined);
@@ -3694,8 +3694,8 @@ function testPipePath(): string {
     : join(tmpdir(), `codex-ilink-test-${suffix}.sock`);
 }
 
-function turnBody(text: string): string {
-  return serializeDurableTurnInput({ attachments: [], text, version: 1 });
+function turnBody(text: string, original = false): string {
+  return serializeDurableTurnInput({ ...(original ? { sourceKind: "channel-original" as const } : {}), attachments: [], text, version: 1 });
 }
 
 class RetryOnceTurnLeaseStore extends SqliteTurnLeaseStore {

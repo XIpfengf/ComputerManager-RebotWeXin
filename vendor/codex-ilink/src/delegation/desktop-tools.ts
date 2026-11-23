@@ -4,7 +4,8 @@ import {join} from "node:path";
 import {createInterface} from "node:readline";
 
 export type DelegationContext = {threadId:string;turnId:string};
-export interface DesktopTools {call(context:DelegationContext, tool:"read_thread"|"send_message_to_thread", args:Record<string,unknown>):Promise<Record<string,any>>;close():void;}
+type DesktopTool = "read_thread" | "list_threads" | "send_message_to_thread" | "list_projects" | "create_thread";
+export interface DesktopTools {call(context:DelegationContext, tool:DesktopTool, args:Record<string,unknown>):Promise<Record<string,any>>;close():void;}
 
 /** Only the official Desktop MCP server speaks to the Desktop endpoint. */
 export function discoverDesktopTools(environment:NodeJS.ProcessEnv=process.env, pipes:()=>string[]=()=>readdirSync("\\\\.\\pipe\\")): {endpoint:string;server:string} {
@@ -46,7 +47,7 @@ export class OfficialDesktopTools implements DesktopTools {
     await this.#request("initialize",{protocolVersion:"2024-11-05",capabilities:{},clientInfo:{name:"codex-ilink-delegation",version:"1.0.0"}});
     child.stdin.write(JSON.stringify({jsonrpc:"2.0",method:"notifications/initialized"})+"\n");
   }
-  async call(context:DelegationContext,tool:"read_thread"|"send_message_to_thread",args:Record<string,unknown>):Promise<Record<string,any>>{
+  async call(context:DelegationContext,tool:DesktopTool,args:Record<string,unknown>):Promise<Record<string,any>>{
     if(!/^[0-9a-f-]{36}$/iu.test(context.threadId)||!/^[0-9a-f-]{36}$/iu.test(context.turnId))throw new Error("E_DELEGATION_ORIGIN_REQUIRED");
     await(this.#ready??=this.#connect());
     const result=await this.#request("tools/call",{name:tool,arguments:args,_meta:{"x-codex-turn-metadata":{thread_id:context.threadId,turn_id:context.turnId}}});

@@ -1,0 +1,33 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { AccountStore } from "../src/accounts/account-store.ts";
+import { ChannelMemory } from "../src/memory/channel-memory.ts";
+
+test("disabled intake never becomes memory after re-enable, and private threads remain excluded across reopen", async t => {
+  const root = mkdtempSync(join(tmpdir(), "ilink-controls-")); let accounts = new AccountStore(root);
+  t.after(() => { accounts.close(); rmSync(root, { recursive: true, force: true }); });
+  accounts.register("primary", "a", "bot-a"); accounts.claimThread("primary", "a1"); accounts.claimThread("primary", "private");
+  let calls = 0;
+  const extractor = { async extract() { calls++; return { facts: [] }; } };
+  let memory = new ChannelMemory(accounts, "primary", { extractor });
+  const source = { threadId: "a1", messageId: "m1", kind: "channel-original" as const, nowMs: 1 };
+  await memory.command("memory enable", source); await memory.command("memory remember 我喜欢米饭", source);
+  assert.match(await memory.command("memory disable", source), /已关闭/);
+  const disabled = memory.snapshot();
+  assert.deepEqual(memory.context("a1"), {});
+  await memory.command("memory enable", source); await memory.command("memory auto enable", source);
+  memory.recordTurn({ ...source, messageId: "off-intake", policy: disabled, text: "我喜欢面条" }, "later-execution");
+  await memory.tick(); assert.equal(calls, 0);
+  memory.makePrivate("private");
+  memory.recordTurn({ ...source, threadId: "private", messageId: "private-msg", policy: memory.snapshot(), text: "我喜欢面条" }, "private-turn");
+  assert.deepEqual(memory.context("private"), {});
+  assert.match(await memory.command("memory remember 我喜欢面条", { ...source, threadId: "private", messageId: "private-control" }), /临时会话/);
+  accounts.close(); accounts = new AccountStore(root); memory = new ChannelMemory(accounts, "primary", { extractor });
+  assert.deepEqual(memory.context("private"), {});
+  assert.equal(memory.mayBackfill("private", "private-msg"), false);
+  assert.equal(memory.mayBackfill("a1", "off-intake"), false);
+  assert.match(JSON.stringify(memory.context("a1")), /米饭/);
+});

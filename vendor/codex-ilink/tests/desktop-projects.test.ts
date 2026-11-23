@@ -10,6 +10,19 @@ import {
   readDesktopProjects,
 } from "../src/windows/desktop-projects.ts";
 
+test("migrated Desktop projects work without the removed legacy workspace roots", () => {
+  assert.deepEqual(parseDesktopProjects({
+    "local-projects": {
+      "fixture-current": { id: "fixture-current", name: "Current", rootPaths: ["G:\\Current"] },
+      "fixture-stale": { id: "fixture-stale", name: "Stale", rootPaths: ["G:\\Stale"] },
+    },
+    "project-order": ["fixture-current"],
+  }), [{ cwd: "G:\\Current", name: "Current" }]);
+  for (const value of [{}, { "local-projects": {} }, { "project-order": [] }]) {
+    assert.throws(() => parseDesktopProjects(value), /E_DESKTOP_PROJECT_STATE_INVALID/);
+  }
+});
+
 test("Desktop saved workspace roots define the project set, order, and names", () => {
   assert.deepEqual(
     parseDesktopProjects({
