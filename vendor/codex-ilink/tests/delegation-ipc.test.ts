@@ -11,3 +11,27 @@ test("delegation IPC validates origin and returns only the authorized handler re
 });
 
 test("oversized Desktop replies preserve a safe actionable diagnosis across IPC",async()=>{const path=process.platform==="win32"?`\\\\.\\pipe\\ilink-error-test-${randomUUID()}`:join(tmpdir(),`ilink-${randomUUID()}.sock`);const server=await startDelegationServer(path,async()=>{throw Error("E_DESKTOP_RESPONSE_TOO_LARGE");});try{const r=await callDelegationServer(path,{threadId:randomUUID(),turnId:randomUUID()},{action:"inspect"});assert.equal(r.ok,false);assert.match(r.text,/超过.*上限/);assert.match(r.text,/无需新建/);assert.doesNotMatch(r.text,/校验或服务暂不可用/);}finally{await new Promise<void>(resolve=>server.close(()=>resolve()));}});
+
+
+test("catalog timeouts are distinct from invalid origin and do not suggest replacing the chat", async () => {
+  const path = process.platform === "win32" ? `\\\\.\\pipe\\ilink-catalog-timeout-${randomUUID()}` : join(tmpdir(), `ilink-${randomUUID()}.sock`);
+  const server = await startDelegationServer(path, async () => { throw Error("E_CODEX_THREAD_LIST_TIMEOUT"); });
+  try {
+    const result = await callDelegationServer(path, { threadId: randomUUID(), turnId: randomUUID() }, { action: "inspect" });
+    assert.equal(result.ok, false);
+    assert.match(result.text, /会话列表查询超时/);
+    assert.match(result.text, /无需新建/);
+    assert.doesNotMatch(result.text, /校验或服务暂不可用/);
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
+test("project discovery failures identify the failed lookup instead of blaming request validation", async () => {
+  const path = process.platform === "win32" ? `\\\\.\\pipe\\ilink-project-error-${randomUUID()}` : join(tmpdir(), `ilink-${randomUUID()}.sock`);
+  const server = await startDelegationServer(path, async () => { throw Error("E_DESKTOP_PROJECT_STATE_UNAVAILABLE"); });
+  try {
+    const result = await callDelegationServer(path, { threadId: randomUUID(), turnId: randomUUID() }, { action: "inspect", target: "测试项目" });
+    assert.equal(result.ok, false);
+    assert.match(result.text, /项目配置/);
+    assert.doesNotMatch(result.text, /校验或服务暂不可用/);
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+});

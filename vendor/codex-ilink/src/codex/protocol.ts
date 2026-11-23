@@ -1,4 +1,5 @@
 export type JsonObject = Record<string, unknown>;
+export type TurnContext=Record<string,{kind:"untrusted"|"application";value:string}>;
 
 export type CodexOutcomeUnknownReason = "eof" | "timeout";
 

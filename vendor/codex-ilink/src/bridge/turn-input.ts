@@ -1,4 +1,6 @@
 import { win32 } from "node:path";
+import type { SourceKind } from "../memory/provenance.ts";
+import type { MemoryPolicySnapshot } from "../memory/channel-memory.ts";
 
 export type DurableTurnAttachment = {
   kind: "file" | "image" | "video";
@@ -7,6 +9,8 @@ export type DurableTurnAttachment = {
 };
 
 export type DurableTurnInput = {
+  memoryPolicy?: MemoryPolicySnapshot;
+  sourceKind?: SourceKind;
   configurationBlocked?: true;
   attachments: DurableTurnAttachment[];
   text: string;
@@ -75,6 +79,11 @@ export function parseDurableInboundFailure(
 }
 
 function assertDurableTurnInput(value: unknown): asserts value is DurableTurnInput {
+  if (isRecord(value) && value.memoryPolicy !== undefined) {
+    const p = value.memoryPolicy;
+    if (!isRecord(p) || Object.keys(p).filter(key => key !== "unavailable"&&key!=="interactionRevision").sort().join() !== "autoEnabled,enabled,revision" || (p.interactionRevision!==undefined&&(!Number.isSafeInteger(p.interactionRevision)||Number(p.interactionRevision)<1)) || (p.unavailable !== undefined && p.unavailable !== true) || typeof p.enabled !== "boolean" || typeof p.autoEnabled !== "boolean" || !Number.isSafeInteger(p.revision) || Number(p.revision) < 0) throw invalidTurnInput();
+  }
+  if (isRecord(value) && value.sourceKind !== undefined && !["channel-original", "external-reference", "mixed", "unknown"].includes(String(value.sourceKind))) throw invalidTurnInput();
   if (isRecord(value) && value.configurationBlocked !== undefined && value.configurationBlocked !== true) throw invalidTurnInput();
   if (!isRecord(value) || value.version !== 1 || typeof value.text !== "string") {
     throw invalidTurnInput();

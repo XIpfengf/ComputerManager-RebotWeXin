@@ -89,3 +89,44 @@ test("stable project keys survive list reorder and explicit project overrides pr
   assert.equal(await service.workspace(null), a); assert.equal(await service.workspace(b), b); projects = [];
   await assert.rejects(service.workspace(null), /不可用/);
 });
+
+test("compiled persona guides scene changes while keeping identity data, current-turn control and factual limits", () => {
+  const profile = defaultProfile(); profile.persona.name = "合成角色"; profile.persona.intensity = 5;
+  profile.expression.tsundereLevel = 4; profile.expression.humorLevel = 3; profile.conversation.taskPersonaLevel = 1;
+  const before = structuredClone(profile), instructions = compilePersona(profile);
+  assert.deepEqual(profile, before);
+  assert.match(instructions, /直接给结果.*本轮/s);
+  assert.match(instructions, /受挫.*先回应/s);
+  assert.match(instructions, /善意.*调侃/s);
+  assert.match(instructions, /分歧.*依据/s);
+  assert.match(instructions, /冲突.*不能.*确定事实/s);
+  assert.match(instructions, /数字.*否定.*路径.*代码.*附件.*完成状态/s);
+  assert.match(instructions, /实际操作、风险、失败与审批时采用 1\/5/);
+  assert.ok(Buffer.byteLength(instructions) < 16000);
+});
+
+test("v1 identity instructions remain frozen while future sessions use the v2 expression compiler", async t => {
+  const { store, db } = setup(t), fake = fakeRuntime(); store.initialize("primary");
+  const oldProfile = defaultProfile(); oldProfile.persona.name = "原角色";
+  const oldInstructions = "合成旧身份指令，不得自动追写";
+  const old = { account: "primary", threadId: "old-v1", profile: oldProfile, instructions: oldInstructions, compilerVersion: 1, instructionHash: hash(oldInstructions), model: "model-a", effort: "low", cwd: "workspace" };
+  db.prepare("INSERT INTO thread_profiles VALUES(?,?,?)").run("old-v1", "primary", JSON.stringify(old));
+  const service = new ChannelProfileService({ store, account: "primary", runtime: fake.runtime, projects: () => [] });
+  await service.command("config set name 新角色");
+  await service.start("workspace", {}, async (cwd, _permissions, identity) => ({ thread: { id: "new-v2" }, cwd, model: identity!.model, reasoningEffort: identity!.effort }));
+  assert.deepEqual(store.thread("old-v1"), old);
+  assert.equal(store.thread("new-v2")!.compilerVersion, 2); assert.equal(store.thread("new-v2")!.profile.persona.name, "新角色");
+  assert.equal(store.thread("legacy"), null);
+  const neutral = defaultProfile(); neutral.persona.intensity = 0; neutral.expression.warmthLevel = 0; neutral.expression.humorLevel = 0;
+  const instructions = compilePersona(neutral);
+  assert.doesNotMatch(instructions, /听起来今天很耗力|总算收尾了/);
+});
+
+test("accounts outside pilot scope can create new sessions with the baseline compiler", async t => {
+  const { store } = setup(t), fake = fakeRuntime();
+  const service = new ChannelProfileService({ store, account: "primary", runtime: fake.runtime, projects: () => [], compilerVersion: 1 });
+  await service.start("workspace", {}, async (cwd, _permissions, identity) => ({ thread: { id: "baseline-new" }, cwd, model: identity!.model, reasoningEffort: identity!.effort }));
+  const snapshot = store.thread("baseline-new")!;
+  assert.equal(snapshot.compilerVersion, 1); assert.doesNotMatch(snapshot.instructions, /直接给结果|受挫示例/);
+  assert.match(snapshot.instructions, /新会话不自动带入旧消息/);
+});

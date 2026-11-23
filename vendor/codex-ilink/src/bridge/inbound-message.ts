@@ -8,6 +8,7 @@ import {
   inboundMediaCandidateFromItem,
   type InboundMediaCandidate,
 } from "../media/inbound-media.ts";
+import type { SourceKind } from "../memory/provenance.ts";
 
 export type ParsedControllerMessage =
   | { kind: "ignored" }
@@ -15,6 +16,7 @@ export type ParsedControllerMessage =
       contextToken: string;
       hasUnsupportedMedia?: true;
       kind: "text";
+      sourceKind: SourceKind;
       configurationBlocked?: true;
       mediaCandidates?: readonly InboundMediaCandidate[];
       messageId: string;
@@ -127,7 +129,8 @@ export function parseControllerMessage(
     contextToken: message.context_token,
     ...(hasUnsupportedMedia ? { hasUnsupportedMedia: true } : {}),
     kind: "text",
-    ...(/^(?:config|history)(?:\s|$)/u.test(text) && (message.item_list ?? []).some(item => item.type !== WireMessageItemType.TEXT || item.ref_msg !== undefined) ? { configurationBlocked: true as const } : {}),
+    sourceKind: (hasUnsupportedMedia || mediaCandidates.length > 0 || (message.item_list ?? []).some(item => item.ref_msg !== undefined) || /[<>`"“”「」『』]|引用|转述|复制|附件内容|工具返回|网页内容/u.test(text)) ? "mixed" : "channel-original",
+    ...(/^(?:config|history|memory)(?:\s|$)/u.test(text) && (message.item_list ?? []).some(item => item.type !== WireMessageItemType.TEXT || item.ref_msg !== undefined) ? { configurationBlocked: true as const } : {}),
     ...(mediaCandidates.length > 0 ? { mediaCandidates } : {}),
     messageId,
     receivedAtMs:

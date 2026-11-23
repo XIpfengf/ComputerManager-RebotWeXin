@@ -20,14 +20,20 @@ import { accountCodex, AccountLeaseStore } from "./account-scope.ts";
 import { ProfileStore } from "../profiles/profile-store.ts";
 import { ChannelProfileService } from "../profiles/channel-profile.ts";
 import { HistoryService } from "../history/history-service.ts";
+import { createChannelMemory, v2AccountEnabled } from "../memory/service.ts";
+import { configuredMemoryExtractor } from "../memory/http-extractor.ts";
 import { isDesktopThreadPinned } from "../windows/desktop-pins.ts";
 import {runtimeConfigurationFingerprint} from "../windows/runtime-configuration.ts";
 import {DelegationService,DelegationStore,initializeDelegationPermissions} from "../delegation/delegation-service.ts";
+import {DesktopTaskCreator} from "../delegation/create-task.ts";
 import {OfficialDesktopTools} from "../delegation/desktop-tools.ts";
 import {startDelegationServer,type DelegationHandler} from "../delegation/ipc.ts";
 import {userPipePath} from "../windows/runtime-paths.ts";
 import type {Server} from "node:net";
-import {selectDelegationTargets} from "../delegation/catalog.ts";
+import {resolveDelegationTargets} from "../delegation/catalog.ts";
+import {ChannelMemory} from "../memory/channel-memory.ts";
+import {ChannelConversation} from "../interaction/conversation.ts";
+import {startInteractionPanel,panelChannel,type PanelChannel} from "../interaction/panel.ts";
 
 /** One host and execution runtime; background reads have a separate fault domain. */
 export async function runMultiAccountHost(options: RunWindowsHostOptions): Promise<void> {
@@ -44,9 +50,11 @@ export async function runMultiAccountHost(options: RunWindowsHostOptions): Promi
   let phase: HostPhase = "starting";
   const channels = new Map<string, { daemon: BridgeDaemon; state: SqliteState; leases: AccountLeaseStore; polling?: Promise<void> }>();
   const statuses = new Map<string, { phase: string; pausedUntilMs?: number }>();
+  const panelChannels=new Map<string,PanelChannel>();
+  let interactionPanel:Awaited<ReturnType<typeof startInteractionPanel>>|undefined;
   const control = await HostControlServer.start({
     pipePath: hostControlPipePath(environment),
-    onStatus: () => ({ phase, pid: process.pid, startedAtMs, accounts: Object.fromEntries(statuses) }),
+    onStatus: () => ({ phase, pid: process.pid, startedAtMs, accounts: Object.fromEntries(statuses),...(interactionPanel?{interactionPanel:interactionPanel.origin}:{}) }),
     onStop: () => { phase = "stopping"; abort.abort(new Error("E_HOST_STOP_REQUESTED")); },
   });
   let store: AccountStore | undefined;
@@ -63,6 +71,13 @@ export async function runMultiAccountHost(options: RunWindowsHostOptions): Promi
     store = new AccountStore(paths.dataDirectory);
     store.importPrimary();
     const accounts = store;
+    if (accounts.list().some(a => v2AccountEnabled(environment, a.name))) {
+      try {
+        interactionPanel = await startInteractionPanel({ channels: panelChannels, accessFile: join(accounts.root, "interaction-panel-access.json") });
+      } catch {
+        console.error("[ilink:interaction-panel] local control page unavailable");
+      }
+    }
     const delegationStore=new DelegationStore(accounts.database);delegationStore.recover();
     initializeDelegationPermissions(accounts.root,accounts.list().map(a=>a.name));
     const delegationPipe=`${userPipePath(environment)}-delegation`;
@@ -101,25 +116,40 @@ export async function runMultiAccountHost(options: RunWindowsHostOptions): Promi
         leases = new AccountLeaseStore(paths.stateDatabasePath, accounts, name);
         const ilink = new ILinkClient({ onAuthExpired: ({ pausedUntilMs }) => statuses.set(name, { phase: "auth-paused", pausedUntilMs }) });
         const idle = () => state.getBridgeSettings().awayTimeoutMinutes * 60_000;
-        const profile = new ChannelProfileService({ store: profiles, account: name, runtime, projects: () => readDesktopProjects(desktopGlobalStatePath(environment)) });
-        const delegation=new DelegationService({account:name,store:delegationStore,root:accounts.root,
+        const v2Enabled = v2AccountEnabled(environment, name);
+        const profile = new ChannelProfileService({ store: profiles, account: name, runtime, compilerVersion: v2Enabled ? 2 : 1, projects: () => readDesktopProjects(desktopGlobalStatePath(environment)) });
+        const creation=new DesktopTaskCreator({db:accounts.database,account:name,tools:()=>new OfficialDesktopTools(environment),models:()=>profile.models(),defaultModel:async cwd=>(await runtime.readDefaultModelSettings(cwd)).model,claim:id=>accounts.claimThread(name,id),track:job=>delegationStore.save(job)});
+        const delegation=new DelegationService({creation,account:name,store:delegationStore,root:accounts.root,
           owner:id=>accounts.owner(id),explicitOwner:id=>accounts.explicitOwner(id),tools:()=>new OfficialDesktopTools(environment),
+          activeBridgeThreads:()=>runtime.activeThreadIds(),
           readInspection:async id=>{const {thread}=await observationRuntime.readThread({threadId:id,includeTurns:false});return {thread:{status:thread.status},history:await recentHistory(thread.path,"")};},
           readResult:async(id,turn)=>{let cursor:string|undefined;const seen=new Set<string>();for(let n=0;n<50;n++){const page=await observationRuntime.readRecentTurns(id,cursor);const found=(page.data as Array<Record<string,any>>).find(t=>t.id===turn);if(found)return found.items.filter((i:any)=>i.type==="agentMessage"&&i.phase==="final_answer").map((i:any)=>i.text).join("\n");if(typeof page.nextCursor!=="string"||seen.has(page.nextCursor))break;cursor=page.nextCursor;seen.add(cursor);}throw Error("E_DELEGATION_RESULT_NOT_FOUND");},
-          resolve:async selector=>{
-            if(/^[0-9a-f-]{36}$/iu.test(selector)){const {thread}=await observationRuntime.readThread({threadId:selector,includeTurns:false});return [{id:selector,title:String(thread.name??thread.preview??selector)}];}
-            const matches:Array<{id:string;title:string}>=[];let cursor:string|undefined;const seen=new Set<string>();
-            for(let n=0;n<50;n++){const page=await observationRuntime.findDelegationThreads(selector,cursor);for(const t of page.data){const x=t as Record<string,unknown>;const title=String(x.name??x.preview??"");if(typeof x.id==="string")matches.push({id:x.id,title});}if(!page.nextCursor)break;if(seen.has(page.nextCursor))throw Error("E_DELEGATION_CURSOR_LOOP");cursor=page.nextCursor;seen.add(cursor);if(n===49)throw Error("会话列表尚未检索完整，请提供目标ID。");}return selectDelegationTargets(matches,selector);
+          resolve:async (selector, purpose)=>{
+            if(/^[0-9a-f-]{36}$/iu.test(selector)){
+              const {thread}=await observationRuntime.readThread({threadId:selector,includeTurns:false});
+              if (thread.id !== selector) throw Error("E_DELEGATION_TARGET_MISMATCH");
+              return [{id:thread.id,title:String(thread.name??thread.preview??selector)}];
+            }
+            return resolveDelegationTargets(selector, readDesktopProjects(desktopGlobalStatePath(environment)), (search, cursor, cwd) => observationRuntime.findDelegationThreads(search, cursor, cwd), purpose === "inspect");
           },notify:async(job,text,key)=>await daemon?.notifyDelegation(text,key,job.contextToken)??false});
-        const scopedCodex=accountCodex(runtime,accounts,name,profile,{service:delegation,state,register:handler=>delegationHandlers.set(name,handler)});
+        const extractor = v2Enabled ? configuredMemoryExtractor(environment) : undefined;
         const scopedObserver=accountCodex(observationRuntime,accounts,name);
+        const memoryBase = v2Enabled ? createChannelMemory(accounts, name, extractor ? { extractor, historyReader: { async read(id, cursor) {
+          const page = await scopedObserver.readRecentTurns(id, cursor);
+          if (!Array.isArray(page.data) || (page.nextCursor !== null && typeof page.nextCursor !== "string")) throw Error("E_MEMORY_HISTORY_PAGE");
+          return { data: page.data, nextCursor: page.nextCursor as string | null };
+        } } } : {}) : undefined;
+        const interactionEnabled=v2AccountEnabled({...environment,ILINK_V2_ACCOUNTS:environment.ILINK_INTERACTION_ACCOUNTS},name);
+        const memory=memoryBase instanceof ChannelMemory?new ChannelConversation(memoryBase,{enabledByDefault:interactionEnabled,profile:id=>profiles.thread(id,name)?.profile??profiles.load(name),panelUrl:()=>interactionPanel?.urlFor(name)}):memoryBase;
+        if(memory instanceof ChannelConversation){panelChannels.set(name,panelChannel(memory,()=>state.getBinding(Date.now())?.threadId??state.getBridgeSettings().mainThreadId??""));interactionPanel?.urlFor(name);}
+        const scopedCodex=accountCodex(runtime,accounts,name,profile,{service:delegation,state,register:handler=>delegationHandlers.set(name,handler)},memory);
         const historyCodex=new Proxy(scopedCodex,{get(target,key){return key === "readThread" ? scopedObserver.readThread : Reflect.get(target,key);}});
         const history=new HistoryService({accounts,account:name,codex:historyCodex,state,leases,instanceId:bridgeInstanceId,now:Date.now,approvalBusy:id=>daemon?.hasPendingApproval(id)??true,desktopPinned:id=>isDesktopThreadPinned(id,environment),notify:async(text,id)=>{await daemon?.notifyHistory(text,id);}});
         // Invalid hand edits must not interrupt old sessions or account polling.
         try { profiles.initialize(name); } catch { console.error(`[ilink:${name}] profile requires config reload or local repair`); }
         daemon = new BridgeDaemon({
           bridgeInstanceId, state, session, leases,
-          codex: scopedCodex, terminalReader:scopedObserver, ilink, profile, history,
+          codex: scopedCodex, terminalReader:scopedObserver, ilink, profile, history, ...(memory ? { memory } : {}),
           // Only the host closes/listens on the shared pipe. Per-account polls
           // can safely ask the receiver to drain its serialized spool.
           hookReceiver: { start: async () => {}, close: async () => {}, drainSpool: () => hooks.drainSpool() },
@@ -157,6 +187,7 @@ export async function runMultiAccountHost(options: RunWindowsHostOptions): Promi
         if (daemon) await daemon.stop().catch(() => {});
         channels.delete(name); leases?.close(); state.close();
         delegationHandlers.delete(name);delegations.delete(name);
+        panelChannels.delete(name);
         statuses.set(name, { phase: "failed" });
         throw error;
       }
@@ -187,6 +218,7 @@ export async function runMultiAccountHost(options: RunWindowsHostOptions): Promi
     const errors: unknown[] = [];
     const attempt = async (fn: () => unknown) => { try { await fn(); } catch (e) { errors.push(e); } };
     await attempt(() => receiver?.stopAccepting());
+    await attempt(() => interactionPanel?.close());
     await Promise.all([...channels.values()].map(c => c.polling));
     for (const channel of channels.values()) await attempt(() => channel.daemon.stop());
     await attempt(() => receiver?.close());

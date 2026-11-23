@@ -18,8 +18,8 @@ ComputerManager-RebotWeXin/
 │   ├── upstream-baseline.md  固定上游及兼容差异
 │   ├── codex-ilink-compatibility.patch
 │   ├── guard-startup-acceptance.md
-│   ├── acceptance.md       V1.0.2验收结果及限制
-│   ├── user-guide.md      当前V1.0.2部署流程与完整命令
+│   ├── acceptance.md       当前验收结果及限制
+│   ├── user-guide.md      部署流程与完整命令
 │   ├── channel-profile-requirements.md   V1.0.2设计和验收标准
 │   ├── channel-profile-implementation.md V1.0.2使用与验证
 │   ├── session-retention-plan.md 持续会话、历史归档规则及命令
